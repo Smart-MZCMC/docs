@@ -29,6 +29,8 @@ jobs:
         uses: pnpm/action-setup@v6
 
       # Node 版本由 packageManager 的 pnpm 运行时要求决定，用当前 LTS。
+      # setup-node v5 起会在检测到 packageManager 字段时自动缓存（v6 收敛为
+      # 仅 npm 自动缓存），这里显式写 cache: pnpm 覆盖自动检测，行为更可控。
       - name: Install Node.js
         uses: actions/setup-node@v7
         with:
