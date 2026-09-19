@@ -18,18 +18,16 @@ jobs:
     steps:
       # 完整历史：VitePress 的 lastUpdated 依赖 git 提交时间，
       # 浅克隆会让「最后更新于」失真。
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      # lockfile 是 lockfileVersion 9.0，pnpm 10 可直接使用。
+      # pnpm 版本由 package.json 的 packageManager 字段统一声明。
       - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: '10'
+        uses: pnpm/action-setup@v6
 
       - name: Install Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: pnpm
@@ -55,7 +53,7 @@ jobs:
           du -sh .vitepress/dist
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: docs-build
           path: .vitepress/dist
