@@ -1,0 +1,63 @@
+name: CI
+
+# 文档站：VitePress 2 + Mermaid
+# 构建产物是带 /docs/ 前缀的静态站点，由 backend 仓库托管。
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      # 完整历史：VitePress 的 lastUpdated 依赖 git 提交时间，
+      # 浅克隆会让「最后更新于」失真。
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # lockfile 是 lockfileVersion 9.0，pnpm 10 可直接使用。
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: '10'
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build
+        run: pnpm run docs:build
+
+      # 产物结构：.vitepress/dist/*.html + .vitepress/dist/assets/**，
+      # 部署到 backend 的 public/docs。cleanUrls 生成的页面不带 .html 后缀，
+      # 由后端静态站点中间件补 .html 解析。
+      - name: Verify build output
+        run: |
+          set -e
+          test -f .vitepress/dist/index.html
+          test -f .vitepress/dist/404.html
+          # base 配错会让线上资源全部 404，而本地构建仍然成功，所以显式校验。
+          grep -o '/docs/assets/' .vitepress/dist/index.html | head -1
+          echo "files: $(find .vitepress/dist -type f | wc -l)"
+          du -sh .vitepress/dist
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-build
+          path: .vitepress/dist
+          if-no-files-found: error
+          retention-days: 7
