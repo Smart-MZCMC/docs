@@ -144,7 +144,9 @@ flutter pub get
 # Web 部署（推荐）
 flutter build web
 
-# 将 build/web/ 内容复制到 backend/public/interviewer/
+# 产物位置：interviewer/build/web/
+# 后端启动时按 public/interviewer -> interviewer/build/web 的顺序查找，
+# 所以本地构建后直接重启后端即可；若要模拟线上发布包布局，再执行：
 cp -r build/web/* ../backend/public/interviewer/
 ```
 

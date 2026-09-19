@@ -207,7 +207,19 @@ flutter run -d chrome
 flutter build web
 ```
 
-构建后，将 `build/web/` 内容发布到 `backend/public/interviewer/`。后端 `main.go` 当前按独立的 `interviewer/build/web` 路径启动静态文件服务；如果采用复制到 `backend/public/interviewer/` 的方式，需要同步检查 `app/ws/server.go` 的静态目录配置。
+采访端 Web 产物由后端 `3002` 服务在 `/interviewer/` 路径下托管。`main.go` 按以下优先级挑第一个存在的目录（见 `app/ws/server.go` 的 `resolveWebDir`）：
+
+1. `<二进制所在目录>/public/interviewer` —— CI 在后端仓库内构建后落盘，随发布包分发，部署机上无需采访端源码；
+2. `<源码根>/public/interviewer` —— 本地在后端仓库内直接 `go run .` 时命中；
+3. `<源码根>/interviewer/build/web` —— 本地开发直接 `flutter build web` 的产物，无需拷贝。
+
+所以本地开发时既可以直接 `flutter build web` 后重开后端，也可以按下面的方式拷贝到 `public/interviewer` 以模拟线上布局：
+
+```powershell
+cp -r interviewer/build/web/* backend/public/interviewer/
+```
+
+若 `/interviewer/` 返回 404，先看后端启动日志里的 `[WS] 采访端 Web: <路径>`，它会打印实际选中的目录。
 
 ### 解说端与包装端
 
