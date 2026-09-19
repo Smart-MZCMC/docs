@@ -1,0 +1,9 @@
+node_modules
+
+# VitePress output and cache
+.vitepress/dist
+.vitepress/cache
+
+# OS
+.DS_Store
+Thumbs.db
