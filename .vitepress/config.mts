@@ -126,7 +126,8 @@ export default withMermaid({
     nav: [
       { text: '首页', link: '/' },
       { text: '使用指南', link: '/operation-manual' },
-      { text: '开发指南', link: '/development-guide' }
+      { text: '开发指南', link: '/development-guide' },
+      { text: '插件开发', link: '/plugin-development' }
     ],
 
     sidebar: [
@@ -156,6 +157,20 @@ export default withMermaid({
           { text: '通信协议', link: '/development-guide#通信协议' },
           { text: '测试与联调', link: '/development-guide#测试与联调' }
         ]
+      },
+      {
+        text: '插件开发',
+        collapsed: false,
+        items: [
+          { text: '快速上手', link: '/plugin-development#快速上手' },
+          { text: '接口定义', link: '/plugin-development#接口定义' },
+          { text: '事件', link: '/plugin-development#事件' },
+          { text: '并发约定', link: '/plugin-development#并发约定' },
+          { text: '配置约定', link: '/plugin-development#配置约定' },
+          { text: '后台展示', link: '/plugin-development#后台展示' },
+          { text: '暴露 HTTP 接口', link: '/plugin-development#暴露-http-接口' },
+          { text: '联调', link: '/plugin-development#联调' }
+        ]
       }
     ],
 
@@ -174,8 +189,13 @@ export default withMermaid({
       text: '最后更新于'
     },
     footer: {
-      message: '融聚绵中，媒传万象',
-      copyright: 'Copyright © 烧瑚烙饼 2026'
+      // message 支持 HTML。备案号与版权按《非经营性互联网信息服务备案管理办法》
+      // 要求放在页面显著位置（页脚）。
+      message:
+        '融聚绵中，媒传万象<br>' +
+        'Copyright © 2026 烧瑚烙饼 版权所有 · ' +
+        '<a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener nofollow">蜀ICP备2025120814号-1</a>',
+      copyright: ''
     },
     darkModeSwitchLabel: '外观',
     sidebarMenuLabel: '目录',

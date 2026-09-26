@@ -26,7 +26,7 @@ flowchart TD
         HTTP[HTTP API<br/>3000 端口]
         WS[WebSocket Hub<br/>3002 端口]
         Lock[Lock Manager]
-        Plugins[Plugins<br/>ntfy / csv]
+        Plugins[Plugins<br/>ntfy / log-archive / csv]
     end
 
     Admin -->|HTTP| HTTP
@@ -190,41 +190,186 @@ JWT_SECRET=your-random-32-char-secret-key-here
 DB_CONNECTION=sqlite
 DB_DATABASE=database/smart-mzcmc.db
 
-# 插件配置（可选）
+# 插件配置（可选，详见后文）
+# ntfy 告警：两项都填才会启用；只填一项会被停用并在后台标出原因
 NTFY_SERVER=https://ntfy.sh
 NTFY_TOPIC=your-alert-topic
+# PLUGIN_NTFY_ENABLED=false   # 配置齐全但仍想关闭时用
+
+# 日志归档
+PLUGIN_LOG_ARCHIVE_ENABLED=true
+PLUGIN_LOG_RETENTION_DAYS=30
+PLUGIN_LOG_CHECK_INTERVAL=1h
+
+# 日志导出接口
+PLUGIN_CSV_EXPORT_ENABLED=true
 ```
 
-### 采访端配置
+改完 `.env` 重启后端，然后到管理后台「插件与统计」页确认：
+每个插件卡片会显示**真实的启用状态**（已启用 / 已停用）、停用原因和生效配置。
+ntfy topic 之类的机密值在界面上是脱敏显示的（形如 `su****yz`）。
 
-编辑 `interviewer/lib/config.dart`：
+若某个插件显示「已停用」，卡片上会直接写明原因，不用去翻服务端日志。
 
-```dart
-class AppConfig {
-  static const String serverUrl = 'http://192.168.1.100:3000';
-  static const String wsUrl = 'ws://192.168.1.100:3002/ws';
+| 环境变量 | 默认值 | 说明 |
+|--------|--------|------|
+| `NTFY_SERVER` | 空 | ntfy 服务器地址 |
+| `NTFY_TOPIC` | 空 | ntfy 主题名 |
+| `PLUGIN_NTFY_ENABLED` | 空 | 显式开关；留空按前两项是否配齐自动判断 |
+| `PLUGIN_LOG_ARCHIVE_ENABLED` | `true` | 是否启用日志自动清理 |
+| `PLUGIN_LOG_RETENTION_DAYS` | `30` | 日志保留天数 |
+| `PLUGIN_LOG_CHECK_INTERVAL` | `1h` | 清理检查间隔，支持 `30s` / `5m` / `1h` |
+| `PLUGIN_CSV_EXPORT_ENABLED` | `true` | 是否启用日志导出接口 |
 
-  // 采访点配置（每台设备启动前修改）
-  static const int projectId = 1;
-  static const String pointCode = 'point_1';
-  static const String pointName = '采访点 1';
-}
-```
+::: tip 升级到新版本后
+如果从旧版本升级，执行一次 `go run . migrate`（或 `smart-mzcmc.exe migrate`），
+它会清掉历史心跳消息——旧版本把每个客户端每 10 秒一条心跳都写进了日志表，
+导致日志审计页和消息统计几乎全是噪音。该操作只删除心跳，不可逆。
+:::
 
-### 解说端/包装端配置
+### 各端地址配置
 
-编辑 `config.json`（与 exe 同目录）：
+正式环境走反向代理，所有客户端只需填**一个域名**，不用再带端口：
+
+| 端 | 配置文件 | 是否需要重新编译 |
+| :--- | :--- | :--- |
+| 管理后台 | 无需配置（默认同源） | 否 |
+| 解说端 | exe 同目录 `config.json` | **否**，改完重启 exe |
+| 包装端 | exe 同目录 `config.json` | **否**，改完重启 exe |
+| 采访端 | `public/interviewer/config.json` | **否**，刷新浏览器 |
+| 导播端 | `director/lib/config.dart` | **是**，改完 `flutter build` |
+
+#### 解说端 / 包装端
+
+编辑与 exe 同目录的 `config.json`：
 
 ```json
 {
-  "ServerUrl": "http://192.168.1.100:3000",
-  "WsUrl": "ws://192.168.1.100:3002/ws",
+  "ServerUrl": "http://zhdb.647382.xyz",
+  "WsUrl": "ws://zhdb.647382.xyz/ws",
   "ProjectId": 1,
   "Role": "commentator"
 }
 ```
 
 > **Role 可选值**：`commentator`（解说端）、`packaging`（包装端）
+>
+> `ServerUrl` 当前**没有任何代码使用**——两个桌面端只通过 WebSocket 通信，
+> 不发 HTTP 请求。留着只是为了以后可能用到，不影响。
+
+#### 采访端
+
+编辑 `backend/public/interviewer/config.json`，刷新浏览器即可：
+
+```json
+{
+  "wsUrl": "ws://zhdb.647382.xyz/ws",
+  "projectId": 1,
+  "pointCode": "point_1",
+  "pointName": "采访点 1"
+}
+```
+
+这是**运行期**配置：采访端是 Web 产物，浏览器启动时会读这个文件覆盖内置默认值。
+好处是现场换服务器地址不用重新构建、重新部署整个采访端。
+
+`pointCode` 决定这台设备在管理后台里对应哪个采访点。同一项目下多台设备各配一个不同的 `pointCode`。
+`config.json` 写坏了也不会让采访端起不来——取不到或字段不合法时会回落到内置默认值。
+
+#### 导播端
+
+编辑 `director/lib/config.dart` 后**必须重新编译**：
+
+```dart
+class AppConfig {
+  static const String serverUrl = 'http://zhdb.647382.xyz';
+  static const String wsUrl = 'ws://zhdb.647382.xyz/ws';
+}
+```
+
+```sh
+cd director && flutter build windows --release
+```
+
+导播端是装在导播室机器上的原生应用，不像采访端那样有可改的外部配置文件。
+
+---
+
+::: danger 启用 HTTPS 后必须把所有 ws:// 换成 wss://
+浏览器把 https 页面里的 `ws://` 判为**混合内容**直接拦掉，
+连不上而且**不报任何错**——表现就是各端状态灯一直转圈。
+
+需要改的三处：
+1. 解说端 / 包装端的 `config.json`
+2. `public/interviewer/config.json`
+3. `director/lib/config.dart`（并重新编译）
+
+`serverUrl` 同理要改成 `https://`。
+:::
+
+### 反向代理部署
+
+后端本身监听两个端口：`3000`（API、首页、后台、文档站）和 `3002`（WebSocket、采访端）。
+生产环境在前面放一层 nginx，把两者收拢到同一个域名：
+
+```nginx
+# 必须在 http {} 块里（宝塔的 vhost 文件就是在 http 块内 include 的）
+map $http_upgrade $smartmzcmc_connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    # 3002：WebSocket
+    location ^~ /ws {
+        proxy_pass http://127.0.0.1:3002;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection $smartmzcmc_connection_upgrade;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        proxy_buffering off;
+    }
+
+    # 3002：采访端
+    location ^~ /interviewer/ {
+        proxy_pass http://127.0.0.1:3002;
+        proxy_set_header Host $host;
+    }
+
+    # 3000：其余全部
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+几个必须注意的点：
+
+| 事项 | 原因 |
+| :--- | :--- |
+| 用 `location ^~ /ws` 而不是 `= /ws` | 首页还会请求 `/ws/status` 拿在线连接数 |
+| **不能**写成 `/ws/` | 后端 Go `ServeMux` 把 `/ws` 注册为精确匹配，带斜杠匹配不上 |
+| `proxy_read_timeout` 至少 300s | 默认 60s。笔记本休眠时心跳会停，60s 断线会让服务端释放导播控制权 |
+| `Connection` 用 map 而不是写死 `"upgrade"` | 写死会让普通 GET 也带 `Connection: upgrade`，破坏上游 keepalive |
+| 删掉宝塔的 `rewrite/go_*.conf` | 那是 Go 框架伪静态模板，会重写查询串，而本项目全靠查询串传参 |
+| 3002 只监听 127.0.0.1 | 无需对外开放，公网只暴露 80/443 |
+
+验证：
+
+```bash
+curl -I http://zhdb.647382.xyz/                            # 200
+curl    http://zhdb.647382.xyz/ws/status                   # {"status":"ok",...}
+curl -I http://zhdb.647382.xyz/interviewer/                # 200
+curl -I http://zhdb.647382.xyz/interviewer/config.json     # 200
+```
+
+`curl` 测不出 WebSocket（不发 Upgrade 头），直接看系统首页右上角的连接状态最快。
 
 ---
 
@@ -232,24 +377,58 @@ class AppConfig {
 
 ### 创建管理员账号
 
-首次使用需通过 API 创建管理员：
+系统没有预置账号。**用户表为空时，第一个注册的人自动成为管理员**，
+不需要任何登录态，也不需要额外密钥——这是全新部署拿到管理员的唯一途径。
+
+推荐在服务器上直接执行：
 
 ```bash
 curl -X POST http://localhost:3000/api/auth/register \
   -H "Content-Type: application/json" \
   -d '{
     "username": "admin",
-    "password": "admin123",
-    "display_name": "系统管理员",
-    "role": "admin"
+    "password": "admin123456",
+    "display_name": "系统管理员"
   }'
+```
+
+成功返回 `201`：
+
+```json
+{"id":1,"username":"admin","display_name":"系统管理员","role":"admin"}
+```
+
+几个要点：
+
+| 事项 | 说明 |
+| :--- | :--- |
+| `role` 不用传 | 引导模式下该字段会被忽略，第一个账号固定是 `admin` |
+| 密码至少 6 位 | 低于 6 位返回 400 `密码至少 6 位` |
+| 用户名限 64 字符内 | 只能包含字母、数字、`_`、`.`、`-` 与中文 |
+| **只有一次机会** | 第一个账号建好后，该接口立刻切换为「仅管理员可调用」 |
+
+::: danger 务必在开放端口前完成这一步
+`POST /api/auth/register` 是公开路由。在用户表为空之前，**任何能访问到
+3000 端口的人**都可以抢先注册管理员。做完这一步后接口会自动收紧，
+但在那之前请不要把端口暴露到公网。
+:::
+
+上机验证：
+
+```bash
+curl -X POST http://localhost:3000/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username":"hacker","password":"hacker123","role":"admin"}'
+# 期望：401 {"error":"系统已有账号，创建用户需要管理员登录"}
 ```
 
 ### 登录管理后台
 
-1. 访问 `http://localhost:3000/admin`
-2. 输入用户名 `admin`，密码 `admin123`
+1. 访问 `http://<服务器IP>:3000/admin`
+2. 输入刚创建的用户名与密码
 3. 登录成功后进入管理后台
+
+令牌有效期 60 分钟，过期后前端会自动跳回登录页（后端返回 401 + 可读错误消息）。
 
 ### 创建项目
 
@@ -262,9 +441,14 @@ curl -X POST http://localhost:3000/api/auth/register \
 
 1. 在管理后台点击「用户管理」标签
 2. 点击「+ 新建用户」
-3. 填写用户名、密码、显示名
+3. 填写用户名（≤64 字符）、密码（**至少 6 位**）、显示名
 4. 角色选择「导播」
 5. 点击「创建」
+
+::: tip 创建用户需要管理员登录态
+`新建用户` 走的是同一个 `POST /api/auth/register`，但只有在管理员登录后
+才能调用。导播账号即使自己调这个接口也会收到 403。
+:::
 
 ### 分配项目权限
 
@@ -301,9 +485,11 @@ flowchart TB
 
 1. **获取控制权**：点击右上角「获取控制权」按钮
 2. **选择项目**：从下拉框选择当前直播项目
-3. **发送切台指令**：
-   - 点击预设按钮（如「50米」），下方显示「即将播送：50米」
-   - **滑动底部确认条**，指令推送给解说端和包装端
+3. **发送切台指令**（每次切台分两步，后端各收到一条 `shot_state`）：
+   - 点击预设按钮（如「50米」），状态条显示「即将切台 50米」
+   - **滑动底部确认条** → 下发「即将切台」，解说端变红，包装端右栏亮起
+   - 现场把画面切过去后，点击 **「确认已切」** → 下发「正在播送」，
+     解说端变绿，包装端右栏清空
 4. **发送内部消息**：在底部输入框输入消息，点击「发送」
 5. **释放控制权**：点击右上角「释放控制权」按钮
 
@@ -319,23 +505,29 @@ flowchart TB
 
 #### 界面说明
 
+窗口只有一块主显示区，按后端指令在两种状态间切换：
+
 ```mermaid
 flowchart TB
-    Current[正在播送<br/><strong>100米</strong>]
-    Next[即将播送<br/><strong>跳远</strong>]
+    Pending["即将播送：<br/><strong>跳远</strong>"]
+    OnAir["正在播送：<br/><strong>100米</strong>"]
     Connection[🟢 已连接]
 
-    Current --> Next
-    Next --- Connection
+    Pending -->|导播点「确认已切」| OnAir
+    OnAir --- Connection
 ```
 
 #### 状态说明
 
 | 状态 | 显示 |
 |------|------|
-| 收到「确认已切」 | 上半部更新为「正在播送：XXX」 |
-| 收到「下一项」 | 下半部显示「即将播送：XXX」 |
+| 收到 `shot_state`，`next` 非空 | 「即将播送：」+ 机位名，**琥珀红**，背景转为暗红 |
+| 收到 `shot_state`，`next` 为空 | 「正在播送：」+ 机位名，**绿色**，背景为深蓝 |
+| 收到新的 `shot_state` | 整体替换为新状态，不需要等待 |
 | 断线重连 | 右下角红点，自动重连（指数退避） |
+
+> 解说端不再自行推断「正在播送」，也不再有 5 秒自动清空计时器——
+> 状态完全由后端下发的 `shot_state` 决定。
 
 ### 包装端（C# 桌面应用）
 
@@ -346,8 +538,8 @@ flowchart TB
 
 #### 功能
 
+- 同时显示「正在播送」与「即将切台」两栏，由后端 `shot_state` 驱动
 - 接收导播发送的内部消息
-- 接收项目切换指令
 - 显示消息历史记录
 
 ### 采访端（Flutter/Web）
@@ -378,7 +570,7 @@ flowchart TB
 | 方法 | 路径 | 说明 | 认证 |
 |------|------|------|------|
 | POST | `/api/auth/login` | 登录 | 否 |
-| POST | `/api/auth/register` | 注册用户 | 否 |
+| POST | `/api/auth/register` | 创建用户（见下方双模式说明） | 视状态而定 |
 | GET | `/api/auth/profile` | 获取当前用户信息 | JWT |
 
 **登录请求示例：**
@@ -387,9 +579,26 @@ flowchart TB
 POST /api/auth/login
 {
   "username": "admin",
-  "password": "admin123"
+  "password": "admin123456"
 }
 ```
+
+::: warning `POST /api/auth/register` 的双模式
+这是唯一一个「有时公开、有时需要管理员」的接口，行为取决于数据库当前状态：
+
+| 系统状态 | 需要认证 | `role` 字段 | 用途 |
+| :--- | :--- | :--- | :--- |
+| **用户表为空** | 否 | 被忽略，强制 `admin` | 全新部署创建第一个管理员 |
+| **已有任何用户** | 是，且必须是 `admin` | 必须是 `admin` 或 `director` | 管理后台「新建用户」 |
+
+其他角色的调用一律 403。另外：
+
+- 密码至少 6 位，否则 400；
+- 用户名 ≤64 字符，仅限字母、数字、`_`、`.`、`-` 与中文，否则 400；
+- 用户名重复返回 409。
+
+对应状态码：401 未登录/令牌无效、403 角色不足、400 参数不合法、409 用户名已存在。
+:::
 
 **响应：**
 
@@ -405,7 +614,7 @@ POST /api/auth/login
 }
 ```
 
-### 管理接口（需 JWT 认证）
+### 管理接口（需 JWT + admin 角色）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -419,6 +628,19 @@ POST /api/auth/login
 | POST | `/api/admin/assign` | 分配用户到项目 |
 | POST | `/api/admin/revoke` | 撤销项目授权 |
 | GET | `/api/admin/users/:id/projects` | 查询用户项目 |
+
+::: danger 只校验「令牌有效」是不够的
+JWT 中间件只判断令牌能不能被解开，不关心持有者是谁。所以这组接口额外挂了
+`RequireRole("admin")`：每次请求都查库比对角色，**不信任令牌里缓存的角色**。
+
+这样管理员在后台把某个人的角色降下来，那个人手里的旧令牌会**立即失效**，
+而不是等到 60 分钟自然过期。导播角色调用这组接口会收到 403。
+:::
+
+同理，`/api/logs/export`、`/api/logs/export/csv`、`/api/logs/cleanup`
+这三个会改动数据的接口也仅管理员可用；只读的 `/api/logs`、
+`/api/plugins`、`/api/messages/:projectId` 保持「已登录即可」，
+因为导播端与管理后台都要读它们。
 
 ### 控制权接口（需 JWT 认证）
 
@@ -491,17 +713,22 @@ ws://<服务器IP>:3002/ws?project_id=1&role=director&token=<JWT>
 
 ### 状态流转
 
+切台是「预告 → 确认」两步，每一步后端都会收到一条携带完整状态的 `shot_state`。
+
 ```mermaid
 flowchart TB
-    A[导播点击预设按钮]
-    B[设置「即将播送」预览]
-    C[滑动确认推送]
-    D[发送 confirm_switch<br/>给解说端和包装端]
-    E[解说端上半部更新为「正在播送」]
-    F[解说端下半部清空]
+    A[导播点击预设按钮<br/>仅本地预览]
+    B[滑动确认条]
+    C["发送 shot_state<br/>current=旧机位 next=新机位"]
+    D[解说端显示「即将播送」<br/>包装端右栏亮起]
+    E[导播现场切画面<br/>点击「确认已切」]
+    F["发送 shot_state<br/>current=新机位 next=空串"]
+    G[解说端切到「正在播送」<br/>包装端右栏清空]
 
-    A --> B --> C --> D --> E --> F
+    A --> B --> C --> D --> E --> F --> G
 ```
+
+接收端不推断状态、不做本地计时，完全按后端下发的 `shot_state` 渲染。
 
 ### 断线重连
 
@@ -597,12 +824,14 @@ smart-mzcmc/
 
 | 类型 | 方向 | 说明 |
 |------|------|------|
-| next_shot | 导播 → 解说/包装 | 下一项内容预览 |
-| confirm_switch | 导播 → 解说/包装 | 确认切台 |
-| chat | 全部 | 内部消息 |
+| shot_state | 导播 → 解说/包装 | 切台状态：`current` 当前播送 + `next` 即将切台（空串=已切完） |
+| chat | 全部 | 内部消息；`{"message":"heartbeat"}` 为保活心跳，后端不落库不转发 |
 | interview_status | 采访端 → 导播/包装 | 采访状态变更 |
 | lock_update | 系统 → 全部 | 控制权变更通知 |
-| system | 系统 → 客户端 | 系统消息（连接成功等） |
+| system | 系统 → 客户端 | 系统消息（连接成功、权限错误等） |
+
+> `next_shot` / `confirm_switch` 是协议升级前的旧类型，后端已合并进 `shot_state`，
+> 收到时只回一条 `system` 错误并丢弃。
 
 ### 默认配置值
 

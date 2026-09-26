@@ -19,13 +19,13 @@ smart-mzcmc/
 │   ├── database/migrations/ # SQLite 数据库迁移
 │   ├── public/              # 后端托管的首页、管理端和采访端资源
 │   ├── routes/              # HTTP 路由
-│   └── main.go              # 启动 3000/3002 两个服务
+│   └── main.go              # 启动 3000/3002 两个服务；`migrate` 子命令只跑迁移
 ├── admin/                   # SvelteKit 管理端源码
 ├── director/                # Flutter 导播端
 ├── interviewer/             # Flutter 采访端（支持 Web）
 ├── CommentatorApp/          # .NET 10 WPF 解说端
 ├── PackagingApp/            # .NET 10 WPF 包装端
-├── docs/                    # VitePress 文档
+├── docs/                    # VitePress 文档（含 plugin-development.md）
 ├── start.bat                # Windows 本地开发快捷启动
 └── plan.md                  # 产品设计与阶段计划
 ```
@@ -40,6 +40,29 @@ smart-mzcmc/
 | 管理端 | SvelteKit + Svelte 5 | 开发时由 Vite 提供 | 管理用户、项目、授权和日志 |
 | 导播端 | Flutter | Windows/Android | 获取控制权、发送切台和聊天消息 |
 | 解说/包装端 | .NET 10 WPF | Windows 桌面 | 订阅 WebSocket 并展示实时信息 |
+
+线上走反向代理，`zhdb.647382.xyz` 一个域名收拢 3000 和 3002，
+配置见「反向代理部署」。**3000 与 3002 在本机启动时都只监听回环**，
+对外一律经由 80/443。
+
+### 客户端配置归属
+
+这是最容易踩的地方——四个客户端的地址配置方式**不一样**：
+
+| 端 | 配置文件 | 读取时机 | 换地址要重新编译？ |
+| --- | --- | --- | --- |
+| 管理后台 | 无（`VITE_API_BASE` 默认空串＝同源） | 构建时 | 否 |
+| 解说端 / 包装端 | exe 同目录 `config.json` | **运行期** | 否 |
+| 采访端 | `public/interviewer/config.json` | **运行期**（Web 端读 JSON） | 否 |
+| 导播端 | `lib/config.dart` | **编译期**（`static const`） | **是** |
+
+采访端为此专门做了运行期覆盖：Web 产物启动时 fetch 同目录 `config.json`，
+逐字段校验后覆盖内置默认值，取不到就回落默认值。配置文件写坏不会让应用起不来。
+
+导播端是原生应用，没有可改的外部配置文件，只能重编译。
+
+**协议上三处都只用 WebSocket，不用 HTTP API**：`serverUrl` 字段在采访端、
+解说端、包装端里都保留了，但没有任何代码引用它。
 
 后端启动时由 `backend/main.go` 启动两个服务：Goravel HTTP 服务监听 `3000`，WebSocket 服务监听 `3002`。部署和防火墙配置不能只开放 `3000`。
 
@@ -273,18 +296,78 @@ Content-Type: application/json
 | --- | --- | --- | --- |
 | `GET` | `/api/status` | 否 | 服务状态 |
 | `POST` | `/api/auth/login` | 否 | 登录并获取 JWT |
-| `POST` | `/api/auth/register` | 否 | 注册用户 |
-| `GET` | `/api/auth/profile` | 是 | 当前用户 |
-| `GET/POST/PUT/DELETE` | `/api/admin/*` | 是 | 用户、项目、授权管理 |
-| `POST/GET` | `/api/locks/:projectId/*` | 是 | 获取、释放、续期和查询控制权 |
-| `GET` | `/api/messages/:projectId` | 是 | 查询项目消息 |
-| `GET` | `/api/logs` | 是 | 按项目或类型查询日志 |
+| `POST` | `/api/auth/register` | **视状态而定** | 创建用户，见下文 |
+| `GET` | `/api/auth/profile` | JWT | 当前用户 |
+| `GET/POST/PUT/DELETE` | `/api/admin/*` | JWT + **admin** | 用户、项目、授权管理 |
+| `POST/GET` | `/api/locks/:projectId/*` | JWT | 获取、释放、续期和查询控制权 |
+| `GET` | `/api/messages/:projectId` | JWT | 查询项目消息 |
+| `GET` | `/api/logs` | JWT | 按项目或类型查询日志 |
 | `GET/POST` | `/api/interview/*` | 否 | 查询和更新采访状态 |
-| `GET` | `/api/plugins` | 是 | 查看插件 |
-| `GET` | `/api/projects/:projectId/stats` | 是 | 项目统计 |
-| `POST` | `/api/logs/export` | 是 | 导出 JSON 日志 |
-| `POST` | `/api/logs/export/csv` | 是 | 导出 CSV 日志 |
-| `POST` | `/api/logs/cleanup` | 是 | 清理旧日志 |
+| `GET` | `/api/plugins` | JWT | 查看插件 |
+| `GET` | `/api/projects/:projectId/stats` | JWT | 项目统计 |
+| `POST` | `/api/logs/export` | JWT + **admin** | 导出 JSON 日志 |
+| `POST` | `/api/logs/export/csv` | JWT + **admin** | 导出 CSV 日志 |
+| `POST` | `/api/logs/cleanup` | JWT + **admin** | 清理旧日志 |
+
+### 权限模型
+
+两层校验，缺一不可：
+
+| 中间件 | 位置 | 作用 |
+| --- | --- | --- |
+| `middleware.Jwt()` | `routes/web.go` 的整个认证组 | 解析并校验令牌，写入 `user_id` |
+| `middleware.RequireRole("admin")` | `/api/admin/*` 与 `/api/logs/{export,cleanup}` | 查库比对角色 |
+
+**`Jwt` 只回答「令牌是否有效」，不回答「持有者是谁」。** 早期版本只在
+管理接口上挂了 `Jwt`，结果任何登录用户（包括最低权限的导播）都能
+列出全部用户与项目、增删项目、分配权限。
+
+两个实现细节，改动时务必保留：
+
+1. **`RequireRole` 每次查库，不信任令牌里的角色。** 令牌有效期 60 分钟，
+   如果把角色写进 claims，管理员在后台降权后对方要等令牌过期才生效。
+   每次多一次 `SELECT role FROM users WHERE id = ?` 换来降权即时生效。
+2. **查库必须用 `models.User` 承载结果。** Goravel 的 ORM 依赖模型元数据
+   解析字段映射，查进匿名 `struct{Role string}` 会直接失败，
+   表现为所有请求都返回 401「用户不存在」。
+
+### 中断响应必须链式调用
+
+```go
+// 正确
+ctx.Response().Json(401, map[string]any{"error": "..."}).Abort()
+
+// 错误：会被 gin 重置成 400 + 空 body，客户端拿不到任何错误信息
+ctx.Response().Json(401, map[string]any{"error": "..."})
+ctx.Request().Abort()
+```
+
+`app/http/middleware/jwt.go` 里所有中断响应都用了链式写法。
+`routes/staticSite.go` 也有同样的坑（那里表现为「200 + 空 body」）。
+
+### 用户创建：唯一的双模式接口
+
+`POST /api/auth/register` 必须挂在公开路由上（全新部署时还没有任何用户，
+不可能有登录态），所以它自己承担了模式判断：
+
+| 系统状态 | 需要认证 | `role` 字段 | 结果 |
+| --- | --- | --- | --- |
+| 用户表为空 | 否 | 被忽略 | 固定 `admin` |
+| 已有用户 | 需要 `admin` | 仅 `admin` / `director` | 按传入值 |
+
+实现要点：
+
+- 判空用 `Count()` 而不是 `First()`。`First` 在结果为空时是否返回
+  `ErrRecordNotFound` 依赖驱动实现，不可靠；`Count` 语义没有歧义。
+- 鉴权放在参数校验**之前**。这是个公开路由，先校验参数等于把密码策略
+  和用户名规则变成匿名可探测的预言机。
+- `AuthController` 拿不到 JWT 中间件写入的上下文，所以
+  `requireAdmin` 自己解析一次 `Authorization` 头。
+
+参数约束：密码 ≥6 位，用户名 ≤64 字符且仅限字母、数字、`_`、`.`、`-`、中文。
+
+⚠️ **运维风险**：在用户表为空之前，任何能访问 3000 端口的人都能抢先
+注册管理员。部署后应立刻创建第一个管理员。
 
 ### WebSocket 连接
 
@@ -308,11 +391,12 @@ ws://<host>:3002/ws?project_id=1&role=director&token=<JWT>
 
 ```json
 {
-  "type": "next_shot",
+  "type": "shot_state",
   "project_id": 1,
   "sender_id": 1,
   "payload": {
-    "name": "100米"
+    "current": "100米",
+    "next": "跳远"
   },
   "timestamp": 1789000000000
 }
@@ -320,12 +404,21 @@ ws://<host>:3002/ws?project_id=1&role=director&token=<JWT>
 
 当前重要消息类型：
 
-- `next_shot`：导播发送下一项预告，转发给解说端和包装端。
-- `confirm_switch`：导播确认切台，转发给解说端和包装端。
-- `chat`：项目内消息广播；`{"message":"heartbeat"}` 会被过滤，不写入有效聊天。
+- `shot_state`：**唯一的切台消息**。导播端每次切台都上报一份完整状态——
+  `current` 是当前正在播送的机位，`next` 是即将切过去的机位；
+  `next` 为空串表示已确认切完、画面就是 `current`。
+  转发给解说端和包装端，需要持有控制权。
+- `chat`：项目内消息广播。`{"message":"heartbeat"}` 是保活心跳，
+  后端在入库之前就丢弃：既不写入 `messages` 表，也不计入项目消息统计，
+  更不会转发给同项目其他端。
 - `interview_status`：采访端状态变更，转发给导播端和包装端。
 - `lock_update`：控制权变化。
 - `system`：连接成功、权限错误等系统消息。
+
+> **协议变更记录**：`next_shot` 与 `confirm_switch` 已合并为 `shot_state`。
+> 后端仍能识别这两个旧类型，但只回一条 `system` 错误并丢弃，不会广播。
+> 这样接收端直接读 `current` 即可，不必自己推断「正在播送」；
+> 旧客户端升级前会收到明确的错误提示，而不是静默失效。
 
 新增消息类型时，应同时更新后端 Hub、发送方客户端、接收方客户端以及本指南中的协议说明，并补充至少一个联调场景。
 
@@ -337,10 +430,13 @@ ws://<host>:3002/ws?project_id=1&role=director&token=<JWT>
 2. HTTP `acquire` 可重复调用；如果当前用户已持有锁，会续期并返回成功。
 3. 其他导播抢锁时返回 `409`，响应中包含当前持有者和过期时间。
 4. 锁默认有效期为 90 秒，导播端需要定期调用 `heartbeat`。
-5. 只有当前锁持有者可以发送 `next_shot` 和 `confirm_switch`。
+5. `shot_state`（切台状态）只接受**持有控制权的导播**。
+   非导播角色（解说端 / 包装端 / 采访端）上报会被拒绝并收到 `system` 提示；
+   导播未持锁同样被拒。被拒的消息会照常写入 `messages` 表并打服务端日志，
+   因为那是一次真实的越权尝试，属于审计线索。
 6. 导播断开时，后端会释放该用户在该项目上的锁并广播更新。
 
-修改锁逻辑时必须重点验证：双导播同时抢锁、持有者心跳、锁过期后重新获取、持有者断线和非持有者推送这五种情况。
+修改锁逻辑时必须重点验证：双导播同时抢锁、持有者心跳、锁过期后重新获取、持有者断线和非持有者推送这五种情况，外加「非导播角色伪造 `shot_state` 被拒」。
 
 ## 数据模型与迁移
 
@@ -357,15 +453,73 @@ ws://<host>:3002/ws?project_id=1&role=director&token=<JWT>
 
 新增字段或表时，新增迁移文件，不要直接修改已经执行过的迁移。迁移后同步更新对应的 `app/models`、控制器请求/响应和客户端模型。开发数据库默认为 `backend/database/smart-mzcmc.db`，测试破坏性迁移前先备份该文件。
 
+### 执行迁移
+
+```sh
+cd backend
+go run . migrate
+```
+
+`migrate` 是本项目自带的子命令，只跑数据库迁移、不启动任何服务。
+Goravel 的 `migrate` 原本是 console 命令，但本项目没有接入 console kernel，
+所以 `main.go` 里直接遍历 `bootstrap.Migrations()` 逐个调 `Up()`。
+
+**所有迁移都必须写成幂等的**，因为这里没有 `migrations` 记账表：
+
+- 建表类迁移用 `if !facades.Schema().HasTable(...)` 守卫；
+- 数据清理类迁移（`DELETE`）天然可重复执行；
+- 不可逆的迁移，`Down()` 里不要尝试恢复数据，写明原因即可
+  （参考 `20260926000001_purge_heartbeat_messages`）。
+
+已有迁移：
+
+| 迁移 | 作用 |
+| --- | --- |
+| `20210101000001_create_jobs_table` | Goravel 内置队列表 |
+| `20260901000001` ~ `20260901000006` | users / projects / user_projects / project_locks / interview_status / messages |
+| `20260926000001_purge_heartbeat_messages` | 清理历史心跳消息（见下） |
+
+### 心跳清理迁移
+
+早期 `hub` 在写 `messages` 表**之后**才过滤 heartbeat，导致每个客户端每 10 秒一条心跳全部落库。
+1401 条历史记录里 1251 条是心跳，日志审计页和 `message_count` 基本被噪音淹没。
+
+现在心跳在入库前就被丢弃（`app/ws/hub.go` 的 `IsHeartbeat`），
+`20260926000001_purge_heartbeat_messages` 负责清掉历史存量：
+
+- 识别条件与 `IsHeartbeat` 一致：`type = 'chat'` 且 `content` 恰为 `{"message":"heartbeat"}`。
+  `content` 是 TEXT 存的原始 JSON，这里用**等值比较**而非模糊匹配，
+  避免误删正文里恰好提到 heartbeat 的消息。
+- 该迁移不可逆，`Down()` 是空实现。删掉的是噪音，没有保留价值。
+- 执行后 `message_count` 从约 1401 降到 153。
+
+> 新增数据清理迁移前，先用只读查询确认命中行数，避免误删。
+
 ## 插件系统
 
 插件代码在 `backend/app/plugins`，当前注册：
 
-- `ntfy-alert`：向 ntfy 推送事件告警，依赖 `NTFY_SERVER` 和 `NTFY_TOPIC`。
-- `log-archive`：按 30 天策略清理历史日志。
-- `csv-export`：提供日志 CSV 导出接口。
+| 插件 | 作用 | 配置 |
+| --- | --- | --- |
+| `ntfy-alert` | 向 ntfy 推送事件告警 | `NTFY_SERVER` + `NTFY_TOPIC`（都配才启用） |
+| `log-archive` | 定期清理过期日志 | `PLUGIN_LOG_RETENTION_DAYS`、`PLUGIN_LOG_CHECK_INTERVAL` |
+| `csv-export` | 提供日志 JSON / CSV 导出接口 | `PLUGIN_CSV_EXPORT_ENABLED` |
 
-插件通过事件总线接收锁获取、锁释放、导播断线等事件。新增插件时应满足：初始化失败不能阻断后端启动；处理失败不能影响主业务；耗时操作不能阻塞 WebSocket 广播；配置必须通过环境变量或配置文件注入。
+配置项集中在 `backend/config/plugins.go`（环境变量驱动），
+`main.go` 的 `initPlugins()` 负责装配。
+
+两个设计约定：
+
+1. **停用的插件依然会注册。** 这样 `GET /api/plugins` 能返回
+   `enabled: false` + `reason` 说明停用原因，后台「插件与统计」页直接可见。
+   「配了但没生效」不应该只能翻日志才查得到。
+2. **机密脱敏后输出。** `Descriptor.Config` 里的 ntfy topic 经 `MaskSecret`
+   处理成 `su****yz`，明文不会进 API 响应。
+
+插件的事件、并发约定、配置写法、后台展示契约，详见
+[插件开发指南](./plugin-development.md)。新增事件类型时，请同步更新
+`Event` 结构体注释、`NtfyAlert.OnEvent` 的 switch、插件开发指南的事件表格，
+以及本节的协议说明。
 
 ## 测试与联调
 
