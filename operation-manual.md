@@ -378,9 +378,26 @@ curl -I http://zhdb.647382.xyz/interviewer/config.json     # 200
 ### 创建管理员账号
 
 系统没有预置账号。**用户表为空时，第一个注册的人自动成为管理员**，
-不需要任何登录态，也不需要额外密钥——这是全新部署拿到管理员的唯一途径。
+不需要登录态，也不需要额外密钥。
 
-推荐在服务器上直接执行：
+**最省事的做法：直接打开管理后台。** 全新部署时登录页会自动检测到
+「系统尚未初始化」，把登录表单换成「创建管理员账号」表单，填完直接进后台。
+不用记 curl 命令。
+
+<div style="display:flex;gap:16px;flex-wrap:wrap;margin:16px 0">
+  <div style="flex:1;min-width:260px">
+    <p style="font-size:13px;color:#888;margin:0 0 6px">全新部署：创建管理员</p>
+    <p style="margin:0">标题变成「创建管理员账号」，上方有黄色提示条说明系统尚未初始化，
+    多出一个「显示名」字段，按钮是「创建并进入后台」。</p>
+  </div>
+  <div style="flex:1;min-width:260px">
+    <p style="font-size:13px;color:#888;margin:0 0 6px">创建完成后</p>
+    <p style="margin:0">页面自动恢复成普通登录表单，初始化提示消失。
+    同一时刻打开的其他人会收到「系统已有账号」的提示。</p>
+  </div>
+</div>
+
+也可以在服务器上直接执行：
 
 ```bash
 curl -X POST http://localhost:3000/api/auth/register \
@@ -416,9 +433,12 @@ curl -X POST http://localhost:3000/api/auth/register \
 上机验证：
 
 ```bash
+curl http://localhost:3000/api/auth/bootstrap
+# 期望 {"needs_bootstrap":false}
+
 curl -X POST http://localhost:3000/api/auth/register \
   -H "Content-Type: application/json" \
-  -d '{"username":"hacker","password":"hacker123","role":"admin"}'
+  -d '{"username":"test","password":"test123456","role":"admin"}'
 # 期望：401 {"error":"系统已有账号，创建用户需要管理员登录"}
 ```
 
