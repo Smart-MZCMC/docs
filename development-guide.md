@@ -14,6 +14,7 @@ smart-mzcmc/
 │   ├── app/http/            # HTTP 控制器与 JWT 中间件
 │   ├── app/models/          # 数据模型
 │   ├── app/plugins/         # ntfy、日志归档、CSV 导出插件
+│   ├── app/setup/           # 初始化：补 .env 密钥、判定是否未初始化、写配置
 │   ├── app/ws/              # WebSocket Hub 与独立服务
 │   ├── config/              # Goravel 配置
 │   ├── database/migrations/ # SQLite 数据库迁移
@@ -453,6 +454,27 @@ ws://<host>:3002/ws?project_id=1&role=director&token=<JWT>
 
 新增字段或表时，新增迁移文件，不要直接修改已经执行过的迁移。迁移后同步更新对应的 `app/models`、控制器请求/响应和客户端模型。开发数据库默认为 `backend/database/smart-mzcmc.db`，测试破坏性迁移前先备份该文件。
 
+### 首次启动的初始化流程
+
+全新部署时数据库文件不存在，后端要能自己把系统拉到可用状态，涉及三个文件：
+
+| 文件 | 职责 |
+| --- | --- |
+| `app/setup/env.go` | 逐行解析/改写 `.env`（保留注释与行序），生成随机密钥 |
+| `app/setup/setup.go` | `init()` 补密钥并采样数据库是否存在；`NeedsSetup()` 判定是否未初始化；`WriteAppConfig()` 写向导提交的配置 |
+| `routes/setupGate.go` | 全局中间件：初始化模式下拦住除 `/api/setup/*`、`/api/health` 外的所有 API，首页 302 到 `/admin/setup` |
+
+三个容易踩的点：
+
+1. **`app/setup` 被 `config/setup.go` 空导入，不能删。** Goravel 在配置对象初始化
+   阶段就校验 `APP_KEY`，缺失直接 `os.Exit(0)`——而 `config/*.go` 的 `init()`
+   会触发这次初始化，早于 `main()`。准备代码必须放在被 `config` 导入的包的
+   `init()` 里才跑得到。
+2. **数据库是否存在必须在框架打开连接之前采样。** SQLite 连一下就建出空文件，
+   之后再 stat 永远得到「存在」。所以 `markStartup()` 在 `init()` 里执行。
+3. **调试时先删掉 `database/smart-mzcmc.db`** 才能重新进入初始化模式；
+   只想看向导页不想重置数据，就手工把 `users` 表清空也行（用户表为空同样算未初始化）。
+
 ### 执行迁移
 
 ```sh
@@ -463,6 +485,10 @@ go run . migrate
 `migrate` 是本项目自带的子命令，只跑数据库迁移、不启动任何服务。
 Goravel 的 `migrate` 原本是 console 命令，但本项目没有接入 console kernel，
 所以 `main.go` 里直接遍历 `bootstrap.Migrations()` 逐个调 `Up()`。
+
+同一个函数也会被初始化向导复用（`main.go` 里通过 `setup.SetMigrator` 注入
+到 `app/setup`，避免 `bootstrap → routes → controllers → bootstrap` 循环依赖），
+所以 **`POST /api/setup/apply` 会把迁移跑完**，用户不需要另外执行 `migrate`。
 
 **所有迁移都必须写成幂等的**，因为这里没有 `migrations` 记账表：
 

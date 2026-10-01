@@ -75,19 +75,23 @@ flowchart TD
 ```bash
 cd backend
 
-# 1. 配置环境变量
-cp .env.example .env
-# 编辑 .env 文件，配置以下关键项：
-# APP_PORT=3000
-# JWT_SECRET=<随机生成的32位字符串>
-# DB_CONNECTION=sqlite
-
-# 2. 安装依赖
+# 1. 安装依赖
 go mod tidy
 
-# 3. 构建并运行
+# 2. 构建并运行
 go build -o smart-mzcmc.exe .
 ./smart-mzcmc.exe
+```
+
+**不需要手工 `cp .env.example .env`。** 首次启动时后端会自动创建 `.env` 并补齐
+`APP_KEY`、`JWT_SECRET`（各 32 位随机串）与 SQLite 配置，然后进入初始化模式，
+在浏览器里完成「配置 + 建管理员」即可，详见下面的[系统初始化](#系统初始化)。
+
+想提前改端口、数据库路径之类的配置，也可以先复制模板再启动：
+
+```bash
+cp .env.example .env
+# 编辑 .env：APP_HOST / APP_PORT / DB_DATABASE / NTFY_* 等
 ```
 
 #### 方式二：Docker 部署
@@ -375,29 +379,59 @@ curl -I http://zhdb.647382.xyz/interviewer/config.json     # 200
 
 ## 系统初始化
 
-### 创建管理员账号
+### 初始化向导（推荐）
 
-系统没有预置账号。**用户表为空时，第一个注册的人自动成为管理员**，
-不需要登录态，也不需要额外密钥。
+系统没有预置账号。全新部署时（数据库文件不存在）后端会**自动进入初始化模式**：
 
-**最省事的做法：直接打开管理后台。** 全新部署时登录页会自动检测到
-「系统尚未初始化」，把登录表单换成「创建管理员账号」表单，填完直接进后台。
-不用记 curl 命令。
+| 行为 | 说明 |
+| :--- | :--- |
+| 自动补 `.env` | 生成 32 位随机 `APP_KEY` / `JWT_SECRET`，并写入 `DB_CONNECTION=sqlite`、`DB_DATABASE` |
+| 拦截业务接口 | 除 `/api/setup/*` 与 `/api/health` 外，所有 API 返回 503 `{"code":"setup_required"}` |
+| 首页跳转 | 访问 `/` 直接 302 到 `/admin/setup`，管理后台任何页面也会被前端送到向导页 |
 
-<div style="display:flex;gap:16px;flex-wrap:wrap;margin:16px 0">
-  <div style="flex:1;min-width:260px">
-    <p style="font-size:13px;color:#888;margin:0 0 6px">全新部署：创建管理员</p>
-    <p style="margin:0">标题变成「创建管理员账号」，上方有黄色提示条说明系统尚未初始化，
-    多出一个「显示名」字段，按钮是「创建并进入后台」。</p>
-  </div>
-  <div style="flex:1;min-width:260px">
-    <p style="font-size:13px;color:#888;margin:0 0 6px">创建完成后</p>
-    <p style="margin:0">页面自动恢复成普通登录表单，初始化提示消失。
-    同一时刻打开的其他人会收到「系统已有账号」的提示。</p>
-  </div>
-</div>
+打开向导页：
 
-也可以在服务器上直接执行：
+```
+http://127.0.0.1:3000/admin/setup
+# 局域网部署换成 http://<服务器IP>:3000/admin/setup
+```
+
+页面上要填两类信息：
+
+**系统信息**（写进 `.env`）
+
+| 字段 | 对应键 | 说明 |
+| :--- | :--- | :--- |
+| 系统名称 | `APP_NAME` | 界面上展示的名称，留空用默认值 |
+| 对外访问地址 | `APP_URL` | 各端填服务器地址时照抄这个。局域网填 `http://<内网IP>:3000`，反代填域名 |
+| 监听地址 | `APP_HOST` | `0.0.0.0` = 局域网内所有机器可访问（推荐）；`127.0.0.1` = 仅本机 |
+| 监听端口 | `APP_PORT` | 默认 `3000` |
+
+**管理员账号**：用户名（≤64 字符，字母数字与 `_` `.` `-` 及中文）、显示名、邮箱（可选，仅用于取头像）、密码（**至少 6 位**）。
+
+点击「完成初始化」后，后端会依次：写 `.env` → 执行全部数据库迁移 → 创建账号（固定为
+**超级管理员**）。成功后页面会列出写入了哪些键、WebSocket 地址，以及是否需要重启。
+
+::: warning 改了监听地址或端口要重启后端
+`.env` 是在进程启动时读入的，监听端口无法热切换。向导页会检测到变化并提示重启；
+不重启也不影响本次使用（当前进程仍按旧地址监听），但重启后才生效。
+:::
+
+::: danger 初始化完成前不要暴露端口
+`POST /api/setup/apply` 与 `POST /api/auth/register` 在系统还没有任何账号时都是公开的。
+请先把服务跑起来、立刻完成初始化，再对外开放。
+:::
+
+### 手工初始化（无浏览器场景）
+
+初始化模式只在「数据库文件不存在」时才成立，所以也可以完全手工建库，后端就不会拦截：
+
+```bash
+cd backend
+cp .env.example .env      # 手工填好 JWT_SECRET（APP_KEY 不填也会自动生成）
+go run . migrate          # 建表（幂等）
+go run .                  # 启动后直接 curl 注册管理员
+```
 
 ```bash
 curl -X POST http://localhost:3000/api/auth/register \
@@ -412,25 +446,29 @@ curl -X POST http://localhost:3000/api/auth/register \
 成功返回 `201`：
 
 ```json
-{"id":1,"username":"admin","display_name":"系统管理员","role":"admin"}
+{"id":1,"username":"admin","display_name":"系统管理员","role":"super_admin"}
 ```
 
 几个要点：
 
 | 事项 | 说明 |
 | :--- | :--- |
-| `role` 不用传 | 引导模式下该字段会被忽略，第一个账号固定是 `admin` |
+| `role` 不用传 | 引导模式下该字段会被忽略，第一个账号固定是 `super_admin` |
 | 密码至少 6 位 | 低于 6 位返回 400 `密码至少 6 位` |
 | 用户名限 64 字符内 | 只能包含字母、数字、`_`、`.`、`-` 与中文 |
 | **只有一次机会** | 第一个账号建好后，该接口立刻切换为「仅管理员可调用」 |
 
-::: danger 务必在开放端口前完成这一步
-`POST /api/auth/register` 是公开路由。在用户表为空之前，**任何能访问到
-3000 端口的人**都可以抢先注册管理员。做完这一步后接口会自动收紧，
-但在那之前请不要把端口暴露到公网。
-:::
+### 初始化模式相关接口
 
-上机验证：
+| 接口 | 说明 |
+| :--- | :--- |
+| `GET /api/setup/status` | 公开。返回 `needs_setup`、`.env` 路径与可写性、数据库路径、当前默认值、探测到的内网 IP |
+| `POST /api/setup/apply` | 公开，但系统已初始化后返回 403。写 `.env`、跑迁移、建首个超级管理员 |
+
+改了数据库路径、想重新初始化时：停服 → 备份并删除 `backend/database/smart-mzcmc.db` → 重启，
+后端会重新进入初始化模式。
+
+手工流程的上机验证（确认接口已经收紧）：
 
 ```bash
 curl http://localhost:3000/api/auth/bootstrap
