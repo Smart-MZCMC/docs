@@ -8,7 +8,7 @@
 | 插件 | 作用 | 值得参考的地方 |
 | :--- | :--- | :--- |
 | `ntfy-alert` | 把告警事件推到 ntfy | 配置解析、开关判定、脱敏输出 |
-| `log-archive` | 定期清理过期日志 | 后台 goroutine + 定时器 + 幂等 Stop |
+| `log-archive` | 定期清理过期日志与导出文件 | 后台 goroutine + 双定时器 + 回调注入 + 幂等 Stop |
 | `csv-export` | 日志导出接口 | 空插件 + HTTP handler |
 
 ---
@@ -140,17 +140,22 @@ type Event struct {
 }
 ```
 
-目前后端**实际发出**的事件只有三个，全部来自 `app/ws/hub.go`：
+目前后端**实际发出**的事件：
 
-| `Type` | 触发时机 | `Data` |
-| :--- | :--- | :--- |
-| `director_disconnect` | 导播 WebSocket 断开 | 空 |
-| `lock_acquire` | 导播连接后自动抢到控制权 | 空 |
-| `lock_release` | 控制权被释放 | `{"reason": "disconnect"}` |
+| `Type` | 触发时机 | 发出位置 | `Data` |
+| :--- | :--- | :--- | :--- |
+| `director_disconnect` | 导播 WebSocket 断开 | `app/ws/hub.go` | 空 |
+| `lock_acquire` | 导播连接后自动抢到控制权 | `app/ws/hub.go` | 空 |
+| `lock_release` | 控制权被释放 | `app/ws/hub.go` | `{"reason": "disconnect"}` |
+| `lock_timeout` | 后台扫描发现控制权已过期并清理 | `app/ws/presence.go` | `{"expire_at": ...}` |
+| `interview_offline` | 采访点被判定离线（断连 / 页面切后台 / 超时） | `app/ws/presence.go` | `{"point_code": ..., "reason": ...}` |
 
-`NtfyAlert` 里还处理了 `lock_timeout` / `interview_offline` / `system_error`，
-但后端目前**没有对应的 Emit 站点**。你可以照这几个类型先写好分支，
-等后端补上触发点时插件无需改动。
+`NtfyAlert` 里还处理了 `system_error`，但后端目前**没有对应的 Emit 站点**。
+你可以照这个类型先写好分支，等后端补上触发点时插件无需改动。
+
+> `lock_timeout` 与 `interview_offline` 在 1.4.0 之前没有任何 Emit 站点——
+> 锁只有在「有人查询时」才会被顺手删掉，采访端离线更是连 `offline` 这个状态
+> 都没有代码写。插件里那两个分支曾经是不可达代码。
 
 ### 发出新事件
 

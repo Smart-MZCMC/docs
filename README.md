@@ -2,12 +2,14 @@
 
 绵中融媒体智汇导播系统的文档站，基于 **[VitePress](https://vitepress.dev) 2 + Mermaid** 构建。
 
-包含两份文档：
+包含四份文档：
 
 | 文档 | 内容 |
 | :--- | :--- |
-| [operation-manual.md](operation-manual.md) | 操作手册：系统概述、安装部署、配置说明、系统初始化、各端操作指南、API 接口参考、核心机制、故障排查、启动检查清单 |
-| [development-guide.md](development-guide.md) | 开发指南：项目结构、后端本地开发、通信协议、测试与联调 |
+| [operation-manual.md](operation-manual.md) | 操作手册：系统概述、安装部署、配置说明、项目授权校验、系统初始化、各端操作指南、API 接口参考、核心机制、故障排查、启动检查清单 |
+| [development-guide.md](development-guide.md) | 开发指南：项目结构、后端本地开发、通信协议、权限模型、控制权与业务规则、数据模型与迁移、插件系统、测试与联调、版本与发布 |
+| [api-examples.md](api-examples.md) | 接口示例：可直接复制的 curl / JavaScript 调用，含登录换令牌、日程更新语义、游标翻页、切台报表、WebSocket 起来与就绪上报 |
+| [plugin-development.md](plugin-development.md) | 插件开发：接口定义、事件表、并发与配置约定、后台展示契约 |
 
 ## 本地开发
 

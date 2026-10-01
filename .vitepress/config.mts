@@ -127,6 +127,7 @@ export default withMermaid({
       { text: '首页', link: '/' },
       { text: '使用指南', link: '/operation-manual' },
       { text: '开发指南', link: '/development-guide' },
+      { text: '接口示例', link: '/api-examples' },
       { text: '插件开发', link: '/plugin-development' }
     ],
 
@@ -138,6 +139,7 @@ export default withMermaid({
           { text: '系统概述', link: '/operation-manual#系统概述' },
           { text: '安装与部署', link: '/operation-manual#安装与部署' },
           { text: '配置说明', link: '/operation-manual#配置说明' },
+          { text: '项目授权校验', link: '/operation-manual#项目授权校验' },
           { text: '系统初始化', link: '/operation-manual#系统初始化' },
           { text: '各端操作指南', link: '/operation-manual#各端操作指南' },
           { text: 'API 接口参考', link: '/operation-manual#api-接口参考' },
@@ -155,7 +157,27 @@ export default withMermaid({
           { text: '项目结构', link: '/development-guide#项目结构' },
           { text: '后端开发', link: '/development-guide#后端本地开发' },
           { text: '通信协议', link: '/development-guide#通信协议' },
-          { text: '测试与联调', link: '/development-guide#测试与联调' }
+          { text: '控制权与业务规则', link: '/development-guide#控制权与业务规则' },
+          { text: '数据模型与迁移', link: '/development-guide#数据模型与迁移' },
+          { text: '插件系统', link: '/development-guide#插件系统' },
+          { text: '测试与联调', link: '/development-guide#测试与联调' },
+          { text: '常见问题', link: '/development-guide#常见问题' },
+          { text: '版本与发布', link: '/development-guide#版本与发布' }
+        ]
+      },
+      {
+        text: '接口示例',
+        collapsed: false,
+        items: [
+          { text: 'curl 快速上手', link: '/api-examples#curl-快速上手' },
+          { text: '登录与令牌', link: '/api-examples#登录与令牌' },
+          { text: '项目与日程', link: '/api-examples#项目与日程' },
+          { text: '机位预设', link: '/api-examples#机位预设' },
+          { text: '控制权', link: '/api-examples#控制权' },
+          { text: '日志与导出', link: '/api-examples#日志与导出' },
+          { text: '切台报表', link: '/api-examples#切台报表' },
+          { text: '操作审计', link: '/api-examples#操作审计' },
+          { text: 'WebSocket（JavaScript）', link: '/api-examples#websocket-javascript' }
         ]
       },
       {
