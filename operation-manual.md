@@ -214,6 +214,9 @@ PLUGIN_CSV_EXPORT_ENABLED=true
 
 # 项目授权校验。默认 false —— 打开前请先把各端的登录账号配好
 REQUIRE_PROJECT_MEMBERSHIP=false
+
+# 谁能登录管理后台网页。默认 leader，只有负责人及以上能进后台
+ADMIN_MIN_ROLE=leader
 ```
 
 改完 `.env` 重启后端，然后到管理后台「插件与统计」页确认：
@@ -234,6 +237,7 @@ ntfy topic 之类的机密值在界面上是脱敏显示的（形如 `su****yz`�
 | `PLUGIN_PRESENCE_TIMEOUT` | `90s` | 超过这个时长没收到任何消息就判定采访端离线 |
 | `PLUGIN_CSV_EXPORT_ENABLED` | `true` | 是否启用日志导出接口 |
 | `REQUIRE_PROJECT_MEMBERSHIP` | `false` | 是否强制校验项目成员身份，详见下方「项目授权校验」 |
+| `ADMIN_MIN_ROLE` | `leader` | 谁能登录管理后台网页，取角色名，详见下方「角色与权限准入」 |
 
 ::: tip 升级到 1.4.0 时先别开 `REQUIRE_PROJECT_MEMBERSHIP`
 它默认关闭，关闭时后端只把「本来会被拦下的请求」写进日志。**先把账号配下去、
@@ -242,9 +246,11 @@ ntfy topic 之类的机密值在界面上是脱敏显示的（形如 `su****yz`�
 
 ### 项目授权校验
 
-`user_projects` 表记录「谁可以访问哪个项目」，此前它只被管理后台读写，
-**从未参与任何权限判断**：后勤账号能看到全部项目，控制权接口只从 URL 取项目
-编号，WebSocket 只要知道 `project_id` 就能监听整个项目的实时消息。
+`user_projects` 表记录「谁可以访问哪个项目」。它现在**参与鉴权**：下面是哪些地方会查它。
+
+> 1.4.0 之前这张表只被管理后台增删查，从未决定过任何人能看什么——后勤账号能看到
+> 全部项目，控制权接口只从 URL 取项目编号，WebSocket 只要知道 `project_id` 就能
+> 监听整个项目的实时消息。开关就是为了补这一层。
 
 `REQUIRE_PROJECT_MEMBERSHIP=true` 之后，以下位置都会校验调用者是不是该项目的
 成员（管理员及以上仍然绕过，因为他们本来就要管理所有项目）：
@@ -278,6 +284,145 @@ ntfy topic 之类的机密值在界面上是脱敏显示的（形如 `su****yz`�
 三个客户端在账号留空时不会尝试登录，行为与打开开关之前完全一致。
 所以可以先把配置发下去、确认没人受影响，再打开后端的开关。
 :::
+
+### 角色与权限准入
+
+1.6.0 起，「谁能调这个接口」的判据不再是「谁的等级够高」，而是一张**具名权限对照表**。
+这一改动在现场的表现是：某个人被 403 了，后端返回的提示里会直接写出**缺哪一项权限、
+这项权限是干什么的、哪些角色能执行**，不用再猜。
+
+::: tip 两层判断，不要混为一谈
+| 问题 | 看什么 |
+| :--- | :--- |
+| 能不能进某个接口 | 具名权限（见下面的对照表） |
+| 能不能操作**某个人** | 角色等级（改角色 / 删账号时要求管理员及以上，且不能动同级或更高、不能自降权） |
+
+同一个请求两层都过才放行。等级仍然保留，但它不再决定接口准入——因为等级只能表达
+「一条直线」，表达不了「负责人能看、不能改」和「导播能抢锁、负责人不能」。
+:::
+
+#### 八个角色
+
+| 角色名（填 `role` 用的值） | 中文名 | 等级 | 定位 |
+| :--- | :--- | :-: | :--- |
+| `super_admin` | 超级管理员 | 60 | 独占系统在线更新、系统信息与运行指标 |
+| `admin` | 管理员 | 50 | 用户、项目、权限分配、日志导出与清理 |
+| `leader` | 负责人 | 40 | 排班与调度、授权项目成员、管理采访点、导出数据。**不参与导播工作** |
+| `director` | 导播 | 30 | 操作被分配项目的切台与上报 |
+| `packaging` | 包装 | 25 | 包装端客户端的登录身份，只订阅与展示 |
+| `commentator` | 解说 | 20 | 解说端客户端的登录身份，只订阅与展示 |
+| `pre_production` | 前期 | 20 | 素材与采访点准备 |
+| `logistics` | 后勤 | 10 | 设备与场地协调，只读为主 |
+
+::: info 解说与前期同为 20 级是故意的
+两者都只消费现场产生的数据，权限面完全一样，所以给了同一个等级。等级相同时
+「等级 ≥ 门槛」对两者一视同仁，谁当门槛都无所谓。
+:::
+
+等级之所以留着不删，是因为判断「能不能操作某个人」确实需要一条高低线：管理员不能
+删掉同级同事，更不能删掉超管。
+
+#### 十二项权限
+
+`✓` 表示该角色持有这一项权限。
+
+| 权限名 | 含义 | 超级管理员 | 管理员 | 负责人 | 导播 | 包装 | 解说 | 前期 | 后勤 |
+| :--- | :--- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
+| `log.view` | 看协调日志 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `project.view` | 看项目、机位、切台记录、统计 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `user.view` | 看用户列表 | ✓ | ✓ | ✓ | · | · | · | · | · |
+| `audit.view` | 看操作审计 | ✓ | ✓ | · | · | · | · | · | · |
+| `log.export` | 导出协调日志 | ✓ | ✓ | ✓ | · | · | · | · | · |
+| `interview.manage` | 管理采访点 | ✓ | ✓ | ✓ | · | · | · | ✓ | · |
+| `project.member` | 授权 / 回收项目成员 | ✓ | ✓ | ✓ | · | · | · | · | · |
+| `switch.operate` | 操作切台 | ✓ | ✓ | · | ✓ | · | · | · | · |
+| `log.cleanup` | 清理协调日志 | ✓ | ✓ | · | · | · | · | · | · |
+| `project.manage` | 建 / 改 / 删项目、机位预设 | ✓ | ✓ | · | · | · | · | · | · |
+| `user.manage` | 增删账号、调整角色 | ✓ | ✓ | · | · | · | · | · | · |
+| `system.maintain` | 系统信息、运行指标、在线更新 | ✓ | · | · | · | · | · | · | · |
+
+`switch.operate` 是唯一一个**不连续**的组合：导播（30）有，负责人（40）没有。
+这不是配错，而是业务要求——负责人管排期但不参与现场操作。这正是等级制表达不了的
+形状，也是本次换掉「比等级」的原因。
+
+`interview.manage` 目前**没有任何接口挂它**：后端还没有采访点的增删改接口。策略里
+先声明这一项，是为了让将来接口出来时权限已经存在、且必须被显式挂上——所以今天
+不要以为「负责人已经能管采访点了」，实际上没有可调用的入口。
+
+`user.view` 与 `user.manage` 是两行：负责人能看见用户列表（否则他授权成员时连被授权
+的人是谁都看不到），但不能增删账号或改角色。
+
+#### 权限挂在哪些接口上
+
+| 权限 | 覆盖的接口 |
+| :--- | :--- |
+| `log.view` | `GET /api/logs` |
+| `log.export` | `POST /api/logs/export`、`POST /api/logs/export/csv` |
+| `log.cleanup` | `POST /api/logs/cleanup` |
+| `user.view` | `GET /api/admin/users` |
+| `user.manage` | `DELETE /api/admin/users/:id`、`PUT /api/admin/users/:id/role`、`POST /api/auth/register`（常态分支） |
+| `project.manage` | `GET /api/admin/projects`、`POST /api/admin/projects`、`PUT`/`DELETE /api/admin/projects/:id`、机位预设的增删改 |
+| `project.member` | `POST /api/admin/assign`、`POST /api/admin/revoke`、`GET /api/admin/users/:id/projects` |
+| `audit.view` | `GET /api/admin/audit-logs` |
+| `switch.operate` | `POST /api/locks/:projectId/acquire`、`/release`、`/heartbeat` |
+| `system.maintain` | `GET /api/system/info`、`/metrics`、`/update`、`/update/progress`、`POST /api/system/update/apply` |
+| `project.view` | 暂未挂任何接口 |
+| `interview.manage` | 暂未挂任何接口（后端还没有采访点增删改接口） |
+
+两处需要特别记住：
+
+- **`GET /api/locks/:projectId/status`（锁状态查询）不挂 `switch.operate`。** 谁在控制
+  是所有人都关心的事，只有会改变切台状态的三个接口才需要这项权限。
+- **`GET /api/admin/projects` 不挂 `project.view`，挂的是 `project.manage`。** 它
+  完全不过滤、返回全量项目详情，与按 `user_projects` 过滤的 `GET /api/projects` 是
+  两回事。
+
+#### 403 提示怎么读
+
+后端返回的错误信息会把四个信息一次给全，直接照着这句话去找人：
+
+```text
+权限不足：缺少权限 project.member（授权/回收项目成员；仅 负责人、管理员、超级管理员 可执行），当前角色为 导播
+```
+
+「缺哪一项权限」+「这项权限干什么」+「谁能做」+「你现在是什么角色」。
+每次被拒都会同时在服务端的 `[Authz]` 日志里留一条记录。
+
+#### 受保护的部分：改不动的那几格
+
+`system.maintain` 与 `super_admin` 本身是**受保护**的：不可撤销，且只能授予超级管理员。
+
+理由是「一旦丢了就回不来」：在线更新会替换服务自身的可执行文件并重启进程，
+任何一次误操作都会影响全系统所有客户端；而一旦没有任何角色持有 `system.maintain`，
+现场**没有任何界面能把它恢复回来**，只能登录服务器手改配置文件。`super_admin` 同理——
+它是上一条规则唯一的受益者，没有它，那条规则成立却没人满足。
+
+::: warning 改权限要改文件并重启，没有在线编辑
+权限对照表写在后端的 `app/rbac/policy.csv` 里，启动时随程序一起加载。管理后台
+**没有**「勾选权限」这类界面，所以：
+
+- 调整某个角色的权限 → 改 `policy.csv` → **重启后端**才生效；
+- 启动日志会打印「策略已加载：12 项权限 / N 条授权规则」，并核对受保护规则是否
+  被破坏。若策略写坏了，系统会**拒绝所有具名权限**（宁可当场不可用，也不能在没有
+  策略的情况下放行）。
+
+在线编辑能力不存在，所以上面那两条守卫（不可撤销、只授予超管）现在还没有写入
+路径会用到；它们的存在是为了将来开这个功能时不用从零想起这件事。
+:::
+
+#### 谁能登录管理后台网页
+
+管理后台网页走的是专用登录入口 `/api/auth/admin-login`，它比 `/api/auth/login`
+多一道**等级门槛**，由环境变量 `ADMIN_MIN_ROLE` 控制，默认 `leader`——也就是
+**只有负责人及以上能登录网页后台**。导播、包装、解说、前期、后勤会被这道门挡住，
+页面提示需要「负责人及以上」。
+
+原生客户端（导播端、解说端、包装端、采访端）走的是 `/api/auth/login`，**不受**
+这一项限制，导播账号照常能登录它自己的原生界面。
+
+要放开某几档就改 `.env` 里的 `ADMIN_MIN_ROLE`，可填 `super_admin`、`admin`、
+`leader`、`director`、`packaging`、`commentator`、`pre_production`、`logistics`
+其中之一，语义是「等级 ≥ 该角色」。填了非法角色名时后端退回 `leader` 并在日志里记一笔。
 
 ### 各端地址配置
 
@@ -511,9 +656,11 @@ http://127.0.0.1:3000/admin/setup
 ```bash
 cd backend
 cp .env.example .env      # 手工填好 JWT_SECRET（APP_KEY 不填也会自动生成）
-go run . migrate          # 建表（幂等）
-go run .                  # 启动后直接 curl 注册管理员
+go run .                  # 建表在启动时自动完成，随后直接 curl 注册管理员
 ```
+
+> 迁移现在每次启动都会自动跑一遍，所以 `go run . migrate` 不是必需的。
+> 它保留下来是为了排障时能单独确认迁移状态，且可以在服务运行时安全执行。
 
 ```bash
 curl -X POST http://localhost:3000/api/auth/register \
@@ -538,7 +685,7 @@ curl -X POST http://localhost:3000/api/auth/register \
 | `role` 不用传 | 引导模式下该字段会被忽略，第一个账号固定是 `super_admin` |
 | 密码至少 6 位 | 低于 6 位返回 400 `密码至少 6 位` |
 | 用户名限 64 字符内 | 只能包含字母、数字、`_`、`.`、`-` 与中文 |
-| **只有一次机会** | 第一个账号建好后，该接口立刻切换为「仅管理员可调用」 |
+| **只有一次机会** | 第一个账号建好后，该接口立刻切换为「仅持有 `user.manage` 的账号可调用」，也就是管理员与超级管理员 |
 
 ### 初始化模式相关接口
 
@@ -570,6 +717,17 @@ curl -X POST http://localhost:3000/api/auth/register \
 
 令牌有效期 60 分钟，过期后前端会自动跳回登录页（后端返回 401 + 可读错误消息）。
 
+::: warning 网页后台有独立的登录门槛
+网页后台走的是专用登录入口 `/api/auth/admin-login`，比普通登录多一道等级门槛，
+由 `.env` 里的 `ADMIN_MIN_ROLE` 控制，默认 `leader`——**只有负责人及以上能登录
+网页后台**。导播、包装、解说、前期、后勤的账号在网页后台会登录失败，提示需要
+「负责人及以上」。
+
+这不是权限不够，而是这个账号本来就不该进后台：他们的工作在各自的原生客户端上。
+导播账号请在导播端登录，解说/包装账号在各自的桌面端登录。需要放开时改
+`ADMIN_MIN_ROLE` 并重启后端，详见「角色与权限准入」。
+:::
+
 ### 创建项目
 
 1. 在管理后台点击「项目管理」标签
@@ -585,9 +743,10 @@ curl -X POST http://localhost:3000/api/auth/register \
 4. 角色选择「导播」
 5. 点击「创建」
 
-::: tip 创建用户需要管理员登录态
-`新建用户` 走的是同一个 `POST /api/auth/register`，但只有在管理员登录后
-才能调用。导播账号即使自己调这个接口也会收到 403。
+::: tip 创建用户需要 `user.manage` 权限
+`新建用户` 走的是同一个 `POST /api/auth/register`，但在系统已有账号之后，它要求
+调用者持有 `user.manage` 权限——也就是管理员或超级管理员。负责人虽然能看用户列表
+、能授权项目成员，但**不能建号**；导播账号自己调这个接口会收到 403。
 :::
 
 ### 分配项目权限
@@ -709,9 +868,15 @@ flowchart TB
 
 | 方法 | 路径 | 说明 | 认证 |
 |------|------|------|------|
-| POST | `/api/auth/login` | 登录 | 否 |
+| POST | `/api/auth/login` | 登录（原生客户端走这个） | 否 |
+| POST | `/api/auth/admin-login` | 登录管理后台网页，额外要求角色达到 `ADMIN_MIN_ROLE` | 否 |
 | POST | `/api/auth/register` | 创建用户（见下方双模式说明） | 视状态而定 |
+| GET | `/api/auth/bootstrap` | 是否仍未初始化（`{"needs_bootstrap":false}` 表示已有人） | 否 |
 | GET | `/api/auth/profile` | 获取当前用户信息 | JWT |
+| PUT | `/api/auth/profile` | 修改自己的显示名与邮箱（不挂任何权限） | JWT |
+| PUT | `/api/auth/password` | 修改自己的密码，旧令牌立即失效 | JWT |
+| GET | `/api/auth/permissions` | 当前账号生效的权限名清单 | JWT |
+| GET | `/api/roles` | 角色清单（角色名与中文名） | JWT |
 
 **登录请求示例：**
 
@@ -723,24 +888,7 @@ POST /api/auth/login
 }
 ```
 
-::: warning `POST /api/auth/register` 的双模式
-这是唯一一个「有时公开、有时需要管理员」的接口，行为取决于数据库当前状态：
-
-| 系统状态 | 需要认证 | `role` 字段 | 用途 |
-| :--- | :--- | :--- | :--- |
-| **用户表为空** | 否 | 被忽略，强制 `admin` | 全新部署创建第一个管理员 |
-| **已有任何用户** | 是，且必须是 `admin` | 必须是 `admin` 或 `director` | 管理后台「新建用户」 |
-
-其他角色的调用一律 403。另外：
-
-- 密码至少 6 位，否则 400；
-- 用户名 ≤64 字符，仅限字母、数字、`_`、`.`、`-` 与中文，否则 400；
-- 用户名重复返回 409。
-
-对应状态码：401 未登录/令牌无效、403 角色不足、400 参数不合法、409 用户名已存在。
-:::
-
-**响应：**
+**登录响应：**
 
 ```json
 {
@@ -754,24 +902,83 @@ POST /api/auth/login
 }
 ```
 
-### 管理接口（需 JWT + admin 角色）
+::: warning `POST /api/auth/register` 的双模式
+这是一个**公开路由**（不在 JWT 中间件组里），但它自己承担了模式判断，行为取决于
+数据库当前状态：
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/admin/users` | 用户列表 |
-| DELETE | `/api/admin/users/:id` | 删除用户 |
-| PUT | `/api/admin/users/:id/role` | 更新用户角色 |
-| GET | `/api/admin/projects` | 项目列表（全部，按日程排序） |
-| POST | `/api/admin/projects` | 创建项目 |
-| PUT | `/api/admin/projects/:id` | 更新项目（名称、描述、场地、日程、状态、模式） |
-| DELETE | `/api/admin/projects/:id` | 删除项目 |
-| POST | `/api/admin/projects/:id/cameras` | 新增机位预设 |
-| PUT | `/api/admin/projects/:id/cameras/:cameraId` | 修改机位（改名、调顺序） |
-| DELETE | `/api/admin/projects/:id/cameras/:cameraId` | 删除机位 |
-| POST | `/api/admin/assign` | 分配用户到项目 |
-| POST | `/api/admin/revoke` | 撤销项目授权 |
-| GET | `/api/admin/users/:id/projects` | 查询用户项目 |
-| GET | `/api/admin/audit-logs` | 操作审计记录 |
+| 系统状态 | 需要认证 | `role` 字段 | 用途 |
+| :--- | :--- | :--- | :--- |
+| **用户表为空** | 否 | 被忽略，强制 `super_admin` | 全新部署创建第一个管理员 |
+| **已有任何用户** | 是，且必须持有 `user.manage`（管理员 / 超级管理员） | 八个角色之一，且不能高于调用者 | 管理后台「新建用户」 |
+
+常态分支的判据是**权限**而不是角色：只有管理员与超级管理员持有 `user.manage`。
+导播、包装、解说、前期、后勤、负责人一律 403——负责人虽然能看用户列表、能授权项目
+成员，但不能建号。另外它只校验「不能授予高于自己的角色」，所以调用者自身拿到的权限
+仍由 `user.manage` 这道门把关，两条是叠加的。
+
+另外：
+
+- 密码至少 6 位，否则 400；
+- 用户名 ≤64 字符，仅限字母、数字、`_`、`.`、`-` 与中文，否则 400；
+- 用户名重复返回 409；
+- 引导模式下第一个账号固定为 `super_admin` 而不是 `admin`：只有超级管理员能授予
+  超管角色，引导出来的是管理员的话系统会停在一个「谁也管不了谁」的状态。
+
+对应状态码：401 未登录/令牌无效、403 权限不足、400 参数不合法、409 用户名已存在。
+:::
+
+#### `GET /api/auth/permissions`：当前账号有什么权限
+
+管理后台用它决定**显示哪些入口、哪些按钮**，判据是权限名而不是角色名：
+
+```json
+GET /api/auth/permissions
+{
+  "role": "leader",
+  "role_label": "负责人",
+  "permissions": ["log.view", "project.view", "user.view", "log.export",
+                  "interview.manage", "project.member"]
+}
+```
+
+几点要注意：
+
+- 门槛是「登录即可」：它只回答「我自己能干什么」，不需要任何管理权限。
+- **只返回调用者自己的权限**，不返回全量对照表。所以不要指望它列出「谁有什么」。
+- 它返回的是**权限名**，与接口要求的权限名一一对应——看到一个名字就能对上
+  「这个人能不能调这条接口」。完整对照见[角色与权限准入](#角色与权限准入)。
+- 这份清单与实际准入永远一致：两者读的是同一份策略，不会出现「菜单里没有但地址栏
+  能进」或「菜单里有但点了 403」。
+
+### 管理接口（需 JWT + 具名权限）
+
+1.6.0 起这一组接口不再统一要求「admin 角色」，而是**逐组挂不同的具名权限**。
+「权限」列就是调用者必须持有的那项权限，持有者见[角色与权限准入](#角色与权限准入)。
+
+| 方法 | 路径 | 所需权限 | 说明 |
+|------|------|------|------|
+| GET | `/api/admin/users` | `user.view` | 用户列表（负责人及以上） |
+| DELETE | `/api/admin/users/:id` | `user.manage` | 删除用户（管理员及以上） |
+| PUT | `/api/admin/users/:id/role` | `user.manage` | 更新用户角色（管理员及以上） |
+| GET | `/api/admin/projects` | `project.manage` | 项目列表（全部，按日程排序，不过滤） |
+| POST | `/api/admin/projects` | `project.manage` | 创建项目 |
+| PUT | `/api/admin/projects/:id` | `project.manage` | 更新项目（名称、描述、场地、日程、状态、模式） |
+| DELETE | `/api/admin/projects/:id` | `project.manage` | 删除项目 |
+| POST | `/api/admin/projects/:id/cameras` | `project.manage` | 新增机位预设 |
+| PUT | `/api/admin/projects/:id/cameras/:cameraId` | `project.manage` | 修改机位（改名、调顺序） |
+| DELETE | `/api/admin/projects/:id/cameras/:cameraId` | `project.manage` | 删除机位 |
+| POST | `/api/admin/assign` | `project.member` | 分配用户到项目（负责人及以上） |
+| POST | `/api/admin/revoke` | `project.member` | 撤销项目授权（负责人及以上） |
+| GET | `/api/admin/users/:id/projects` | `project.member` | 查询用户项目（负责人及以上） |
+| GET | `/api/admin/audit-logs` | `audit.view` | 操作审计记录（管理员及以上） |
+
+`user.view` 与 `user.manage` 分开是 1.6.0 的新增能力：此前这一整组接口共用一道
+「管理员」门槛，于是负责人能授权成员、能管采访点，却连被授权的人是谁都看不到。
+
+::: tip 系统接口不在这一组里
+`/api/system/*`（系统信息、运行指标、在线更新）挂的是 `system.maintain`，只有超级
+管理员持有，且它是受保护权限。详见[角色与权限准入](#角色与权限准入)。
+:::
 
 **`PUT /api/admin/projects/:id` 的字段语义是「出现了就更新」**，空串表示清空：
 
@@ -794,11 +1001,18 @@ POST /api/auth/login
 时间字段接受 `<input type="datetime-local">` 的 `2026-05-20T09:00` 写法（不带秒）。
 
 ::: danger 只校验「令牌有效」是不够的
-JWT 中间件只判断令牌能不能被解开，不关心持有者是谁。所以这组接口额外挂了
-`RequireRole("admin")`：每次请求都查库比对角色，**不信任令牌里缓存的角色**。
+JWT 中间件只判断令牌能不能被解开，不关心持有者是谁。所以这组接口在 JWT 之后还挂了
+一道**具名权限**校验（表格里的「所需权限」列）：每次请求都查库拿到当前角色再查权限
+对照表，**不信任令牌里缓存的角色**。
 
 这样管理员在后台把某个人的角色降下来，那个人手里的旧令牌会**立即失效**，
-而不是等到 60 分钟自然过期。导播角色调用这组接口会收到 403。
+而不是等到 60 分钟自然过期。少了这一层，任何登录用户（包括最低权限的导播）
+都能列出全部用户与项目、增删项目、分配权限。
+
+**注意不要再按「角色名」理解这一层。** 1.6.0 之前这里挂的是 `RequireRole("admin")`
+（等级门槛，语义是 `等级 >= 管理员`），现在 `routes/web.go` 里已经没有一条路由再挂
+等级门槛了——每条路由挂的是自己需要的具名权限。等级仍然保留，但它只管「能不能操作
+某个人」（改角色、删账号），两件事是分开的。
 :::
 
 ### 项目接口（需 JWT 认证）
@@ -810,9 +1024,22 @@ JWT 中间件只判断令牌能不能被解开，不关心持有者是谁。所�
 | GET | `/api/projects/:projectId/shot-cuts` | 切台时间线与报表 |
 | GET | `/api/projects/:projectId/stats` | 项目统计 |
 
-导播端用 `GET /api/projects` 填充项目下拉框。**它和管理接口 `/api/admin/projects`
-不是一回事**：后者需要管理员角色，导播调用会 403。此前导播端误用了管理接口，
-项目下拉框恒为空。
+::: warning 它和管理接口 `/api/admin/projects` 不是一回事
+| | `GET /api/projects` | `GET /api/admin/projects` |
+| :--- | :--- | :--- |
+| 准入 | JWT（+ 成员校验打开时还要成员） | JWT + `project.manage`（管理员及以上） |
+| 过滤 | **按 `user_projects` 收窄**，非管理员只拿授权给他的 | **完全不过滤**，返回全量项目详情（描述、场馆、排期、负责人） |
+
+正因为后者不过滤，它才挂 `project.manage` 而不是 `project.view`：把它降到「人人可看」
+等于开了一个绕过过滤的后门。导播端的项目下拉靠的是左边这条，此前误用了管理接口，
+结果导播调它一律 403、下拉框恒为空。
+:::
+
+::: info 「有权访问」有一个例外
+`GET /api/projects` 对管理员及以上返回全部项目；对其他人，**只要他被授权过至少一个
+项目**就只返回被授权的那些。**一个项目都没被授权的人会拿到全部项目**——这是刻意的
+兜底，否则刚接上鉴权的存量部署会看到空下拉框，现场直接没法播。
+:::
 
 `GET /api/projects/:projectId/shot-cuts` 支持 `from` / `to`（时间范围）、
 `shot`（机位）与 `limit`，返回时间线加汇总：
@@ -840,15 +1067,19 @@ JWT 中间件只判断令牌能不能被解开，不关心持有者是谁。所�
 
 ### 控制权接口（需 JWT 认证）
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/api/locks/:projectId/acquire` | 获取控制权 |
-| POST | `/api/locks/:projectId/release` | 释放控制权 |
-| POST | `/api/locks/:projectId/heartbeat` | 心跳续期 |
-| GET | `/api/locks/:projectId/status` | 查询锁状态 |
+| 方法 | 路径 | 所需权限 | 说明 |
+|------|------|------|------|
+| POST | `/api/locks/:projectId/acquire` | `switch.operate` | 获取控制权 |
+| POST | `/api/locks/:projectId/release` | `switch.operate` | 释放控制权 |
+| POST | `/api/locks/:projectId/heartbeat` | `switch.operate` | 心跳续期 |
+| GET | `/api/locks/:projectId/status` | 登录（+ 成员） | 查询锁状态 |
 
-开启 `REQUIRE_PROJECT_MEMBERSHIP` 后，这些接口会先校验调用者是不是该项目的成员，
+开启 `REQUIRE_PROJECT_MEMBERSHIP` 后，这组接口会先校验调用者是不是该项目的成员，
 否则返回 403。
+
+`switch.operate` 的持有者是**导播、管理员、超级管理员**——注意里面没有负责人。
+这是唯一一组不连续的权限：负责人等级（40）比导播（30）高，但按业务不参与现场操作，
+所以不能操作切台。管理员及以上保留是为了救场（切台锁卡死、导播端崩了没人接手）。
 
 ### 采访接口（无需认证）
 
@@ -868,14 +1099,18 @@ WebSocket 已经不可用时还能到达服务端。
 
 ### 日志与审计接口（需 JWT 认证）
 
-| 方法 | 路径 | 权限 | 说明 |
+| 方法 | 路径 | 所需权限 | 说明 |
 |------|------|------|------|
-| GET | `/api/messages/:projectId` | 登录 | 查询项目消息 |
-| GET | `/api/logs` | 登录 | 查询协调日志 |
-| GET | `/api/admin/audit-logs` | admin | 查询操作审计 |
-| POST | `/api/logs/export` | leader 及以上 | 导出日志（JSON），写入 `storage/exports` |
-| POST | `/api/logs/export/csv` | leader 及以上 | 导出日志（CSV），写入 `storage/exports` |
-| POST | `/api/logs/cleanup` | admin | 清理旧日志 |
+| GET | `/api/messages/:projectId` | 登录（+ 成员） | 查询项目消息 |
+| GET | `/api/logs` | `log.view`（全员） | 查询协调日志 |
+| GET | `/api/admin/audit-logs` | `audit.view`（管理员及以上） | 查询操作审计 |
+| POST | `/api/logs/export` | `log.export`（负责人及以上） | 导出日志（JSON），写入 `storage/exports` |
+| POST | `/api/logs/export/csv` | `log.export`（负责人及以上） | 导出日志（CSV），写入 `storage/exports` |
+| POST | `/api/logs/cleanup` | `log.cleanup`（管理员及以上） | 清理旧日志 |
+
+导出与清理是两项不同的权限：导出能把整个项目历史拉走（或落成文件带出系统），
+清理是真的删数据、删的正是审计线索本身。1.6.0 之前这两条共用一道「管理员」门槛，
+等于把「只能导不能删」绑在一起，让不需要删除权限的人也被迫持有删除权限。
 
 `GET /api/logs` 支持以下参数：
 
@@ -938,7 +1173,7 @@ ws://<服务器IP>:3002/ws?project_id=1&role=director&token=<JWT>
 | 参数 | 必填 | 说明 |
 |------|------|------|
 | project_id | 是 | 项目 ID |
-| role | 是 | 角色：director/commentator/packaging/interviewer |
+| role | 是 | 角色：`director`（导播）/ `commentator`（解说）/ `packaging`（包装）/ `interviewer`（采访）/ `admin` / `super_admin` |
 | token | 见上 | JWT 令牌 |
 | user_id | 否 | 用户 ID |
 | point_code | 采访端必填 | 采访点编码 |
@@ -1050,6 +1285,8 @@ flowchart TB
 | WebSocket 连接失败 | 检查防火墙是否开放 3002 端口 |
 | 认证失败 | 检查 JWT 是否过期，重新登录获取新 token |
 | 控制权获取失败 | 检查是否已有其他导播持有控制权 |
+| 控制权获取返回「缺少权限 switch.operate」 | 该账号不是导播 / 管理员 / 超级管理员。负责人等级虽高于导播，但按业务不参与导播工作，**不持有**这项权限 |
+| 提示「权限不足：缺少权限 xxx」 | 照错误信息里的「哪些角色可执行」去改账号角色，或换用持有者账号。该账号不是项目成员是另一回事，提示文案不同 |
 | 提示「无权访问该项目」(403) | 开启了项目授权校验但该账号没被分配到该项目。到管理后台「权限分配」页加上，或临时把 `REQUIRE_PROJECT_MEMBERSHIP` 改回 `false` |
 | 提示「该项目需要登录后访问」(401) | 同上，但客户端连账号都没填 |
 
@@ -1076,13 +1313,21 @@ flowchart TB
 自动清理。若该插件被停用（`PLUGIN_LOG_ARCHIVE_ENABLED=false`），导出文件不会
 被删除，需要手工清理该目录。
 
+### 登录管理后台被拒
+
+| 现象 | 原因与处理 |
+|------|----------|
+| 网页后台登录失败，提示「需要负责人及以上」 | 账号角色低于 `ADMIN_MIN_ROLE`（默认 `leader`）。这是默认行为，导播/包装/解说/前期/后勤本就不该进后台；要放开就改 `.env` 的 `ADMIN_MIN_ROLE` 并重启 |
+| 后端启动日志出现「策略已加载：12 项权限 / N 条授权规则」，随后全部接口 403 | 策略文件加载失败，`app/rbac` 会 fail-closed 拒绝所有具名权限。核对 `policy.csv` 是否被改动过，然后重启 |
+| 后端启动日志出现「策略里出现了未知角色 / 未知权限」 | 策略文件里角色名或权限名拼错了。角色名必须与代码里的常量一字不差 |
+
 ---
 
 ## 快速启动检查清单
 
 - [ ] 后端 `.env` 已配置 `JWT_SECRET`
 - [ ] 后端已启动（3000 + 3002 端口）
-- [ ] 管理员账号已创建
+- [ ] 管理员账号已创建（网页后台默认只有负责人及以上能登录，默认值由 `ADMIN_MIN_ROLE` 控制）
 - [ ] 项目已创建（建议填好计划时间，导播端据此把当前/下一场置顶）
 - [ ] 导播账号已创建并分配项目权限
 - [ ] 导播端已配置服务器地址并登录

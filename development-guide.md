@@ -145,6 +145,9 @@ PLUGIN_PRESENCE_TIMEOUT=90s
 
 # 可选：强制校验项目成员身份。默认 false，此时只记日志不拦截
 REQUIRE_PROJECT_MEMBERSHIP=false
+
+# 可选：谁能登录管理后台网页（前端专用登录入口）。默认 leader
+ADMIN_MIN_ROLE=leader
 ```
 
 不要把真实的 `JWT_SECRET`、ntfy topic 或数据库文件提交到仓库。后端配置从环境变量读取，JWT 默认有效期由 `config/jwt.go` 控制。
@@ -326,29 +329,49 @@ Content-Type: application/json
 | --- | --- | --- | --- |
 | `GET` | `/api/status` | 否 | 服务状态 |
 | `GET` | `/api/health` | 否 | 健康检查（真的查库，不可用返回 503） |
-| `POST` | `/api/auth/login` | 否 | 登录并获取 JWT |
+| `POST` | `/api/auth/login` | 否 | 登录并获取 JWT（原生客户端走这个） |
+| `POST` | `/api/auth/admin-login` | 否 | 登录管理后台网页，额外校验 `authz.admin_min_role` |
 | `POST` | `/api/auth/register` | **视状态而定** | 创建用户，见下文 |
+| `GET` | `/api/auth/bootstrap` | 否 | 是否仍未初始化 |
 | `GET/PUT` | `/api/auth/profile` | JWT | 读取 / 修改当前用户资料 |
 | `PUT` | `/api/auth/password` | JWT | 改密码（旧令牌立即失效） |
+| `GET` | `/api/auth/permissions` | JWT | 当前账号生效的权限名清单 |
 | `GET` | `/api/roles` | JWT | 角色清单 |
-| `GET/POST/PUT/DELETE` | `/api/admin/*` | JWT + **admin** | 用户、项目、机位、授权、审计 |
-| `POST/GET` | `/api/locks/:projectId/*` | JWT + 成员 | 获取、释放、续期和查询控制权 |
+| `GET/POST/PUT/DELETE` | `/api/admin/*` | JWT + 具名权限 | 用户、项目、机位、授权、审计，逐条权限见下表 |
+| `GET/POST` | `/api/system/*` | JWT + `system.maintain` | 系统信息、运行指标、在线更新（仅超级管理员） |
+| `POST/GET` | `/api/locks/:projectId/*` | JWT + 成员（写操作另加 `switch.operate`） | 获取、释放、续期和查询控制权 |
 | `GET` | `/api/messages/:projectId` | JWT + 成员 | 查询项目消息 |
-| `GET` | `/api/logs` | JWT | 按项目/类型/发件人/时间查询日志 |
-| `GET` | `/api/projects` | JWT | 当前账号有权访问的项目 |
+| `GET` | `/api/logs` | JWT + `log.view` | 按项目/类型/发件人/时间查询日志 |
+| `GET` | `/api/projects` | JWT | 当前账号有权访问的项目（按 `user_projects` 收窄） |
 | `GET` | `/api/projects/:projectId/cameras` | JWT + 成员 | 机位预设 |
 | `GET` | `/api/projects/:projectId/shot-cuts` | JWT + 成员 | 切台时间线与报表 |
 | `GET` | `/api/projects/:projectId/stats` | JWT + 成员 | 项目统计 |
 | `GET/POST` | `/api/interview/*` | 否 | 查询和更新采访状态 |
 | `GET` | `/api/plugins` | JWT | 查看插件 |
-| `GET` | `/api/admin/audit-logs` | JWT + **admin** | 操作审计 |
-| `POST` | `/api/logs/export` | JWT + **leader** | 导出 JSON 日志（`from`/`to` 必填） |
-| `POST` | `/api/logs/export/csv` | JWT + **leader** | 导出 CSV 日志（`from`/`to` 必填） |
-| `POST` | `/api/logs/cleanup` | JWT + **admin** | 清理旧日志（会写审计） |
+
+`/api/admin/*` 与 `/api/system/*` 逐条对应的权限（**接口准入看具名权限，不再比等级**）：
+
+| 路径 | 权限 |
+| --- | --- |
+| `GET /api/admin/users` | `user.view` |
+| `DELETE /api/admin/users/:id`、`PUT /api/admin/users/:id/role` | `user.manage` |
+| `GET/POST/PUT/DELETE /api/admin/projects*` | `project.manage` |
+| `POST /api/admin/assign`、`POST /api/admin/revoke`、`GET /api/admin/users/:id/projects` | `project.member` |
+| `GET /api/admin/audit-logs` | `audit.view` |
+| `GET /api/logs` | `log.view` |
+| `POST /api/logs/export`、`POST /api/logs/export/csv` | `log.export` |
+| `POST /api/logs/cleanup` | `log.cleanup` |
+| `POST /api/locks/:projectId/{acquire,release,heartbeat}` | `switch.operate` |
+| `GET /api/system/*` | `system.maintain` |
+
+权限名、持有者与策略文件见 `app/rbac/policy.csv`；`interview.manage` 与 `project.view`
+已在策略里声明但**尚未挂到任何路由**（前者是后端还没有采访点增删改接口，后者是
+非管理端项目视图由成员校验负责）。
 
 > **`/api/projects` 与 `/api/admin/projects` 不是一回事。** 前者给导播端用，
-> 只返回当前账号有权访问的项目；后者需要管理员角色。导播端曾经误用后者，
-> 结果项目下拉框恒为空——因为导播调它一律 403。
+> 只返回当前账号有权访问的项目（且一个项目都没被授权时会退回全部，以免存量部署
+> 看到空下拉框）；后者挂 `project.manage`，**完全不过滤**，返回全量项目详情。
+> 导播端曾经误用后者，结果项目下拉框恒为空——因为导播调它一律 403。
 
 ### 权限模型
 
@@ -357,17 +380,33 @@ Content-Type: application/json
 | 中间件 | 位置 | 作用 |
 | --- | --- | --- |
 | `middleware.Jwt()` | `routes/web.go` 的整个认证组 | 解析并校验令牌，写入 `user_id` |
-| `middleware.RequireRole(...)` | `/api/admin/*`、`/api/system/*`、日志导出与清理 | 查库比对角色等级 |
+| `middleware.RequirePermission(...)` | `/api/admin/*`、`/api/system/*`、`/api/logs`、切台的三个写接口 | 查库拿到角色，再查 `app/rbac` 的权限对照表 |
 | `middleware.RequireProjectMember()` | 带 `projectId` 的业务接口 | 查 `user_projects` 比对项目成员身份 |
+
+> **`routes/web.go` 里已经没有任何一条路由挂 `RequireRole`。**
+> `TestPermissionRoutes_不再有等级门槛` 会把这一点钉住，有人挂回去直接测试红。
+> `middleware/permission.go` 里的「不信任令牌里的角色」「用 `models.User` 承载查询
+> 结果」等约束对 `RequirePermission` 同样成立，改动时一并看那个文件。
+
+**准入与「能不能操作某个人」是两件事，不要合并。** 前者看具名权限（策略在
+`app/rbac/policy.csv`），后者看等级（`models.Role.AtLeast`，留在
+`controllers/authz.go` 的 `decideRoleChange` / `decideDeleteUser`）。混着来就会
+出现「后勤等级高于管理员，于是能删掉导播账号」这种坑。`user.manage` 与
+`project.manage` 这类权限只回答「能不能进这个接口」，进去之后能不能操作**这个人**
+仍由控制器判断：不能操作权限不低于自己的、不能自降权、不能动最后一个超管。
+
+**等级已经不再是准入依据。** 等级只能表达「一条直线」，表达不了「负责人能看、
+不能改」，也表达不了「导播能抢锁、负责人不能」——`switch.operate` 就是后者的活
+例子。所以角色与权限的对应关系走显式清单（`p, <角色>, <权限>`），不走继承链：
+漏补一行的后果是该角色少一项能力（安全侧），而不是多一项（危险侧）。
 
 **`Jwt` 只回答「令牌是否有效」，不回答「持有者是谁」。** 早期版本只在
 管理接口上挂了 `Jwt`，结果任何登录用户（包括最低权限的导播）都能
 列出全部用户与项目、增删项目、分配权限。
 
-**`RequireRole` 也不回答「这个人能不能看这个项目」。** `user_projects` 表
-从第一天就在，但此前只被管理接口增删查，从未参与任何鉴权判断：后勤账号能
-看到全部项目列表，控制权接口只从 URL 取项目编号，WebSocket 知道 `project_id`
-就能监听整个项目的实时消息。
+**项目成员校验也不属于这一套。** `user_projects` 表从第一天就在，但此前只被管理
+接口增删查，从未参与任何鉴权判断：后勤账号能看到全部项目列表，控制权接口只从 URL
+取项目编号，WebSocket 知道 `project_id` 就能监听整个项目的实时消息。
 
 `RequireProjectMember()` 就是补这一层。它有两个必须记住的性质：
 
@@ -379,7 +418,7 @@ Content-Type: application/json
 
 两个实现细节，改动时务必保留：
 
-1. **`RequireRole` 每次查库，不信任令牌里的角色。** 令牌有效期 60 分钟，
+1. **`RequirePermission` 每次查库，不信任令牌里的角色。** 令牌有效期 60 分钟，
    如果把角色写进 claims，管理员在后台降权后对方要等令牌过期才生效。
    每次多一次 `SELECT role FROM users WHERE id = ?` 换来降权即时生效。
 2. **查库必须用 `models.User` 承载结果。** Goravel 的 ORM 依赖模型元数据
@@ -389,10 +428,19 @@ Content-Type: application/json
 ::: warning 路由中间件只能挂在 Group 上
 Goravel 的 `Get(path, handler)` 返回 `Action`，而 `Action` 没有 `Middleware()`
 方法。要给单条路由加中间件，得用 `Prefix(...).Middleware(...).Group(...)`。
-另外 `RequireRole` 会把 `models.User` 写进 `ctx` 的 `"user"` 键，而
-`Jwt` 只写 `"user_id"`——**在没有 `RequireRole` 的路由上调用 `actorFrom(ctx)`
+另外 `RequirePermission` 会把 `models.User` 写进 `ctx` 的 `"user"` 键，而
+`Jwt` 只写 `"user_id"`——**在没有 `RequirePermission` 的路由上调用 `actorFrom(ctx)`
 会一律返回 401「未提供认证令牌」**。这类路由要自己按 `user_id` 查库
 （参考 `ProjectController.actorForProjectList`）。
+:::
+
+::: warning 策略在文件里，不在数据库
+角色 → 权限写在 `app/rbac/policy.csv`，由 `go:embed` 随程序加载：**改权限要改文件
+并重启，没有在线编辑**。加载失败时 `rbac.Can` 一律返回 false，即全部拒绝——
+宁可当场不可用，也不要在没有策略的情况下放行。`system.maintain` 与 `super_admin`
+是受保护的（不可撤销、只授予超管），理由与改动入口见 `app/rbac/protect.go`。
+改完策略记得跑 `go test ./app/rbac/... ./routes/...`：`rbac_test.go` 的迁移矩阵与
+`permission_routes_test.go` 的挂载清单会挡住写错的行。
 :::
 
 ### 中断响应必须链式调用
@@ -417,11 +465,18 @@ ctx.Request().Abort()
 | 系统状态 | 需要认证 | `role` 字段 | 结果 |
 | --- | --- | --- | --- |
 | 用户表为空 | 否 | 被忽略 | 固定 `super_admin` |
-| 已有用户 | 需要 `admin` | 六种角色之一，且不高于调用者 | 按传入值 |
+| 已有用户 | 需要持有 `user.manage`（admin / super_admin） | 八种角色之一，且不高于调用者 | 按传入值 |
 
 > 注意是 `super_admin` 而不是 `admin`：只有超级管理员能授予超管角色，
 > 引导出来的若是管理员，就再没有人能创建超管，系统会停在一个「谁也管不了谁」
 > 的状态——系统更新、角色调整全都做不了。
+
+> 常态分支的判据是 `rbac.Can(actor.Role, rbac.PermUserManage)`，不是角色名。
+> 它挂不进 `RequirePermission`——这是公开路由，引导模式恰恰没有令牌，所以只能
+> 在控制器里手写一道（`resolveActor` 自己解析 `Authorization` 头）。
+> **这条校验不能省**：早先只校验 `guardGrant`（不能授予高于自己的角色），
+> 于是负责人（等级 40，不持有 `user.manage`）能建出另一个负责人，
+> 等于绕过了「只有管理员及以上能增删账号」这条矩阵规则。引导模式不受影响。
 
 实现要点：
 
@@ -429,13 +484,19 @@ ctx.Request().Abort()
   `ErrRecordNotFound` 依赖驱动实现，不可靠；`Count` 语义没有歧义。
 - 鉴权放在参数校验**之前**。这是个公开路由，先校验参数等于把密码策略
   和用户名规则变成匿名可探测的预言机。
-- `AuthController` 拿不到 JWT 中间件写入的上下文，所以
-  `requireAdmin` 自己解析一次 `Authorization` 头。
 
 参数约束：密码 ≥6 位，用户名 ≤64 字符且仅限字母、数字、`_`、`.`、`-`、中文。
 
 ⚠️ **运维风险**：在用户表为空之前，任何能访问 3000 端口的人都能抢先
-注册管理员。部署后应立刻创建第一个管理员。
+注册超级管理员。部署后应立刻创建第一个管理员。
+
+另外两处准入**仍然是等级**，因为它们不属于路由守卫：
+
+- `POST /api/auth/admin-login`（管理后台网页专用登录）校验 `authz.admin_min_role`，
+  默认 `leader`——只有负责人及以上能进后台，原生客户端走 `/api/auth/login`
+  不受限制。配置项写错（非法角色名）时退回 `leader` 并记日志。
+- `ProjectController.List` 对管理员及以上返回全部项目，对其他人按 `user_projects`
+  收窄；**一个项目都没被授权的人退回全部**，否则存量部署会看到空下拉框。
 
 ### WebSocket 连接
 
@@ -588,27 +649,47 @@ ws://<host>:3002/ws?project_id=1&role=director&token=<JWT>
 3. **调试时先删掉 `database/smart-mzcmc.db`** 才能重新进入初始化模式；
    只想看向导页不想重置数据，就手工把 `users` 表清空也行（用户表为空同样算未初始化）。
 
-### 执行迁移
+### 迁移什么时候跑
+
+**每次启动都会跑一遍全部迁移**，不需要任何额外命令。执行点在
+`bootstrap.Boot()` 的 `WithCallback` 里（`bootstrap/app.go`），排在 `rbac.Bootstrap()`
+之前 —— 权限策略表本身就是一条迁移建的，顺序反过来的话每次全新启动都会先撞一次
+「no such table」再退回内嵌 `policy.csv`。
+
+仍然保留两条手动入口，用于排障：
 
 ```sh
 cd backend
-go run . migrate
+go run . migrate          # 只跑迁移、不启动任何服务，可在服务运行时安全执行
 ```
 
-`migrate` 是本项目自带的子命令，只跑数据库迁移、不启动任何服务。
-Goravel 的 `migrate` 原本是 console 命令，但本项目没有接入 console kernel，
-所以 `main.go` 里直接遍历 `bootstrap.Migrations()` 逐个调 `Up()`。
+Goravel 的 `migrate` 原本是 console 命令，本项目没有接入 console kernel，
+所以 `bootstrap.RunMigrations()` 直接遍历 `bootstrap.Migrations()` 逐个调 `Up()`。
+初始化向导也复用同一个函数（`main.go` 里通过 `setup.SetMigrator` 注入到
+`app/setup`，避免 `bootstrap → routes → controllers → bootstrap` 循环依赖）。
 
-同一个函数也会被初始化向导复用（`main.go` 里通过 `setup.SetMigrator` 注入
-到 `app/setup`，避免 `bootstrap → routes → controllers → bootstrap` 循环依赖），
-所以 **`POST /api/setup/apply` 会把迁移跑完**，用户不需要另外执行 `migrate`。
+**迁移失败时服务拒绝启动**，日志里写明是哪一条迁移、原始错误、以及按实际发生频率
+排序的处理办法。最常见的原因不是数据库坏了，而是**有第二个实例在同时启动或执行
+`migrate`** —— 那会撞上「表已存在」。跨进程锁（`bootstrap/lock.go`）已经挡住了
+这个场景，所以真遇到迁移失败时，先确认没有第二个实例再往下查。
 
-**所有迁移都必须写成幂等的**，因为这里没有 `migrations` 记账表：
+### 为什么所有迁移都必须幂等
+
+因为**每次启动都全量重跑，而且没有 `migrations` 记账表**：
 
 - 建表类迁移用 `if !facades.Schema().HasTable(...)` 守卫；
-- 数据清理类迁移（`DELETE`）天然可重复执行；
+- 加字段类用 `HasColumn` / `HasIndex` 守卫；
+- 数据清理类（`DELETE`）天然可重复执行；
 - 不可逆的迁移，`Down()` 里不要尝试恢复数据，写明原因即可
   （参考 `20260926000001_purge_heartbeat_messages`）。
+
+在线更新会在换掉二进制之后跑一次迁移、失败就换回备份，随后 systemd 拉起新进程时
+**又会跑一遍**。同一次升级里迁移因此被执行两次，这正是幂等必须成立的原因。
+
+> **写完迁移文件一定要把它加进 `bootstrap.Migrations()`。** 忘了加不会报任何错：
+> `RunMigrations` 只遍历注册表，未注册的文件连一行日志都不会有，而迁移本身又有
+> 守卫，跑不跑都返回 nil。`20261101000006_normalize_audit_created_at` 就这样丢掉了
+> —— 现在 `bootstrap` 里有一条测试要求迁移文件与注册表严格一一对应。
 
 已有迁移：
 
@@ -624,6 +705,21 @@ Goravel 的 `migrate` 原本是 console 命令，但本项目没有接入 consol
 | `20261101000003_add_project_schedule_fields` | projects 加日程、场地、负责人、状态、模式 |
 | `20261101000004_create_project_cameras_table` | 机位预设；并给存量项目播下默认的 10 个机位 |
 | `20261101000005_create_audit_logs_table` | 操作审计 |
+| `20261101000006_normalize_audit_created_at` | 把 v1.4.0 / v1.4.1 写入的本地时区时间戳统一成 UTC |
+| `20261102000001_create_role_permissions_table` | 权限矩阵的运行时存储（见权限模型一章） |
+
+### 审计时间戳归一迁移
+
+`audit_logs.created_at` 在 SQLite 里是 TEXT，审计页的日期筛选走的是**字符串**比较，
+不做任何时间语义解析。而 `20261101000006` 之前，写入侧用的是 `time.Now()`（本地时区），
+于是列里存的是 `2026-10-02T00:13:19.6237187+08:00`，而筛选条件归一成 UTC 之后是
+`...16:14:00Z` —— 按字符比较前者大于后者，`created_at <= to` 一条都不成立。
+
+表现是「明明有记录，审计页却是空的」，且**不带筛选时又能看到**，所以很难联想到时区。
+
+写入侧早在 v1.4.2 就改成 `time.Now().UTC()`，这条迁移负责修好 v1.4.0 / v1.4.1 留下的
+历史行。它只改仍带时区偏移的行：以 `Z` 结尾的已经是 UTC，裸墙上时间（没有偏移）
+含义不确定，宁可不猜也不改错 —— 改错等于凭空造出一条错误时间的证据。
 
 ### 心跳清理迁移
 
@@ -827,9 +923,13 @@ dotnet build -c Release
 ## 提交前检查清单
 
 - [ ] 新增 API 已注册路由、校验参数并补充认证说明。
+- [ ] **新接口挂的是 `RequirePermission(具名权限)`，不是 `RequireRole`；改动
+      `policy.csv` 或路由挂载后，`go test ./app/rbac/... ./routes/...` 全绿。**
 - [ ] 新增 WebSocket 消息已定义 payload，并验证所有相关角色。
 - [ ] 数据结构变更已新增迁移、模型和客户端类型。
-- [ ] **迁移写成幂等的**（`runMigrations` 每次启动都遍历全部迁移，没有记账表）。
+- [ ] **迁移文件已加进 `bootstrap.Migrations()`**（漏加不会报错，只是永远不执行）。
+- [ ] **迁移写成幂等的**（每次启动全量遍历全部迁移，没有记账表；在线更新那次之后
+      还会再跑一遍）。
 - [ ] **所有 `First()` 的「查到了吗」判断都补了主键**（查不到时不报错，只留零值）。
 - [ ] 没有提交 `.env`、JWT 密钥、数据库备份或发布目录中的临时文件。
 - [ ] 后端执行 `go build ./...`、`go vet ./...`、`go test ./...`，并起真实服务实测一次。
